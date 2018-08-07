@@ -8,12 +8,17 @@
 #include <assert.h>
 
 #include "math.h"
-#include "External\Remotery.h"
-#include "passthrough_vs.c"
+#include "common_shader.h"
+#include "external/Remotery/Remotery.h"
+#include "external/octarine/octarine_mesh.h"
+//#include "passthrough_vs.c"
+//#include "transform_vs.c"
 #include "passthrough_ps.c"
 
-#define WIDTH 820 //820;
-#define HEIGHT 1000 //1000;
+#pragma comment(lib, "octarine_mesh.lib")
+
+#define WIDTH 512 //820;
+#define HEIGHT 512 //1000;
 
 const int frame_width = WIDTH;
 const int frame_height = HEIGHT;
@@ -22,6 +27,9 @@ u32 frame_buffer[WIDTH][HEIGHT];
 f32 depth_buffer[WIDTH][HEIGHT];
 
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
+
+extern VertexShader transform_vs;
+extern VertexShader passthrough_vs;
 
 typedef struct MeshHeader {
 	uint32_t size;
@@ -151,8 +159,7 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	return 0;
 }
 
-void error_win32(const char* func_name, DWORD last_error)
-{
+void error_win32(const char* func_name, DWORD last_error) {
 	void* error_msg = NULL;
 	char display_msg[256] = { 0 };
 
@@ -221,13 +228,22 @@ inline v2f32 compute_barycentric_coords(TriangleSetup *p_setup) {
 	return barycentric_coords;
 }
 
-inline void interpolate_attribute(v4f32 *p_triangle_vertex_data, v2f32 barycentric_coords, u8 num_attributes_per_vertex, u8 attribute_index) {
-	v4f32 *p_v0_attribute = p_triangle_vertex_data + attribute_index;
+inline v4f32 interpolate_attribute(v4f32 *p_triangle_vertex_data, v2f32 barycentric_coords, u8 num_attributes_per_vertex, u8 attribute_index) {
+	v4f32 v0_attribute = *(p_triangle_vertex_data + attribute_index);
 	v4f32 v1_attribute = *(p_triangle_vertex_data + attribute_index + num_attributes_per_vertex);
 	v4f32 v2_attribute = *(p_triangle_vertex_data + attribute_index + num_attributes_per_vertex * 2);
 	
-	*p_v0_attribute = v4f32_add_v4f32(*p_v0_attribute, v4f32_add_v4f32(v4f32_mul_f32(v4f32_subtract_v4f32(v1_attribute, *p_v0_attribute), barycentric_coords.x), v4f32_mul_f32(v4f32_subtract_v4f32(v2_attribute, *p_v0_attribute), barycentric_coords.y)));
-	return;
+	return v0_attribute = 
+		v4f32_add_v4f32(v0_attribute,
+			v4f32_add_v4f32(
+				v4f32_mul_f32(
+					v4f32_subtract_v4f32(v1_attribute, v0_attribute), barycentric_coords.x
+				), 
+				v4f32_mul_f32(
+					v4f32_subtract_v4f32(v2_attribute, v0_attribute), barycentric_coords.y
+				)
+			)
+		);
 }
 
 SuprematistVertex suprematist_vertex_buffer[] = {
@@ -284,6 +300,8 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, vertex_id);
 	}
 
+	free(p_vertex_input_data);
+
 	// Primitive Assembly:
 	assert((index_count % 3) == 0);
 	u32 triangle_count = index_count / 3;
@@ -319,16 +337,19 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		a_vertex_positions[0].x *= factor;
 		a_vertex_positions[0].y *= factor;
 		a_vertex_positions[0].z *= factor;
+		a_vertex_positions[0].w *= factor;
 
 		factor = 1.0 / a_vertex_positions[1].w;
 		a_vertex_positions[1].x *= factor;
 		a_vertex_positions[1].y *= factor;
 		a_vertex_positions[1].z *= factor;
+		a_vertex_positions[1].w *= factor;
 
 		factor = 1.0 / a_vertex_positions[2].w;
 		a_vertex_positions[2].x *= factor;
 		a_vertex_positions[2].y *= factor;
 		a_vertex_positions[2].z *= factor;
+		a_vertex_positions[2].w *= factor;
 
 		// viewport transformation : NDC Space --> Screen Space
 		Viewport viewport = graphics_pipeline.rs.viewport;
@@ -339,6 +360,10 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 			0, 0, viewport.max_depth-viewport.min_depth, viewport.min_depth,
 			0,	0,	0,	1
 		};
+
+		//v4f32 test = { 1, 0, 0, 1 };
+		//test = m4x4f32_mul_v4f32(screen_from_ndc, test);
+		
 		
 		vertex_pos_ss = m4x4f32_mul_v4f32(screen_from_ndc, a_vertex_positions[0]);
 		a_vertex_positions[0] = vertex_pos_ss;
@@ -382,17 +407,24 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 			max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
 			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
+			
+			u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+			u32 per_fragment_data_size = sizeof(v4f32)*num_attibutes;
+			v4f32 *p_frag_data = malloc(per_fragment_data_size);
+			v4f32 *p_vertex_data = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
+			
 
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
 				for(i32 x = min_bounds.x; x<max_bounds.x; ++x) {
 					v2i32 frag_coords = { x,y };
 					if(is_inside_triangle(&setup, frag_coords)) { // use edge functions for inclusion testing					
 						v2f32 barycentric_coords = compute_barycentric_coords(&setup);
-						v4f32 *p_vertex_data = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
-						u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+						
+						memcpy(p_frag_data, p_vertex_data, per_fragment_data_size);		
 						for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-							interpolate_attribute(p_vertex_data, barycentric_coords, num_attibutes, attribute_index);
+							p_frag_data[attribute_index] = interpolate_attribute(p_frag_data, barycentric_coords, num_attibutes, attribute_index);
 						}
+
 						//Early-Z Test
 						// ASSUMPTION : Pixel shader does not change the depth of the fragment!  - Cerlet 
 						f32 fragment_z = p_vertex_data->z;
@@ -408,8 +440,12 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 					}
 				}
 			}
+
+			free(p_frag_data);
 		}
 	}
+
+	free(p_vertex_output_data);
 }
 
 void clear_render_target_view(const f32 *p_clear_color) {
@@ -432,13 +468,13 @@ void clear_depth_stencil_view(const f32 depth) {
 }
 
 void render() {
-	graphics_pipeline.ia.input_layout = sizeof(passthrough_vs.vs_input);
+	graphics_pipeline.ia.input_layout = transform_vs.in_vertex_size;
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;// suprematist_index_buffer;
 	graphics_pipeline.ia.p_vertex_buffer = test_mesh.p_vertex_buffer;// suprematist_vertex_buffer;
 
-	graphics_pipeline.vs.output_register_count = sizeof(passthrough_vs.vs_output) / sizeof(v4f32);
-	graphics_pipeline.vs.shader = passthrough_vs.vs_main;
+	graphics_pipeline.vs.output_register_count = transform_vs.out_vertex_size / sizeof(v4f32);
+	graphics_pipeline.vs.shader = transform_vs.vs_main;
 	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 
 	Viewport viewport = { 0.f,0.f,(f32)frame_width,(f32)frame_height,0.f,1.f };
@@ -461,26 +497,25 @@ void present(HWND h_window) {
 
 void init() {
 	{ // Load mesh
-		FILE *p_file = fopen("suzanne.poi", "rb");
-		assert(p_file);
-		fread(&test_mesh.header, sizeof(test_mesh.header), 1, p_file);
 
-		uint32_t vertex_size = sizeof(float) * 6;
-		uint32_t vertex_buffer_size = test_mesh.header.vertex_count * vertex_size;
-		uint32_t index_buffer_size = test_mesh.header.index_count * sizeof(uint32_t);
+		void *p_data = NULL;
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
+		if(result != OCTARINE_MESH_OK) { assert(true); };
 
-		test_mesh.p_vertex_buffer = malloc(vertex_buffer_size);
-		fread(&test_mesh.p_vertex_buffer, vertex_size, test_mesh.header.vertex_count, p_file);
-		test_mesh.p_index_buffer = (u32*)malloc(index_buffer_size);
-		fread(&test_mesh.p_index_buffer, sizeof(uint32_t), test_mesh.header.index_count, p_file);
-		fclose(p_file);
+		u32 vertex_size = sizeof(float) * 8;
+		u32 vertex_buffer_size = test_mesh.header.vertex_count * vertex_size;
+		u32 index_buffer_size = test_mesh.header.index_count * sizeof(u32);
+
+		test_mesh.p_vertex_buffer = p_data;
+		test_mesh.p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
 	}
+
 	{ // Init Camera
-		camera.pos = (v3f32){ 7.48113f, -6.50764f, 5.34367f};
-		camera.yaw_in_degrees = 46.6919f;
-		camera.pitch_in_degrees = 63.5593;
+		camera.pos = (v3f32){ 0.0f, 0.0f, -1.0f};
+		camera.yaw_in_degrees = 0.0;
+		camera.pitch_in_degrees = 0.0;
 		camera.roll_in_degrees = 0.0;
-		camera.fov_y_angle_deg = 50.f;
+		camera.fov_y_angle_deg = 90.f;
 		camera.near_plane = 0.1;
 
 		// clip from view transformation, view space : y - up, left-handed
@@ -523,8 +558,11 @@ void init() {
 			0.0, 0.0, 0.0, 1.0
 		};
 
-		m4x4f32 world_from_view = m4x4f32_mul_m4x4f32(&rotation_pitch, &rotation_yaw);
-		world_from_view = m4x4f32_mul_m4x4f32(&change_of_basis, &world_from_view);
+		m4x4f32 world_from_view = m4x4f32_mul_m4x4f32( &rotation_yaw, &rotation_pitch);
+		//world_from_view = m4x4f32_mul_m4x4f32(&change_of_basis, &world_from_view);
+		world_from_view.m03 = camera.pos.x;
+		world_from_view.m13 = camera.pos.y;
+		world_from_view.m23 = camera.pos.z;
 		camera.view_from_world = inverse(&world_from_view);
 	
 		per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);

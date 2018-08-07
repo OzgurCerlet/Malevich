@@ -5,38 +5,40 @@
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
     </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
     <Filter Include="Resource Files">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="Source Files\External">
-      <UniqueIdentifier>{c1f3866c-db6b-4da6-b249-7d386ef425d2}</UniqueIdentifier>
+    <Filter Include="Source Files\external">
+      <UniqueIdentifier>{83d7fbc8-c2ed-4dfc-872a-1bf7cebd8a09}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\external\Remotery">
+      <UniqueIdentifier>{74b60d2a-15e1-49b5-b61b-d3281d7cec9e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\external\octarine">
+      <UniqueIdentifier>{7945257b-1a69-46a3-8d55-06db06bda3fa}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.c">
+    <ClCompile Include="source\main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="passthrough_vs.c">
+    <ClCompile Include="source\passthrough_ps.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="passthrough_ps.c">
+    <ClCompile Include="source\passthrough_vs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="External\Remotery.c">
-      <Filter>Source Files\External</Filter>
-    </ClCompile>
-    <ClCompile Include="transform_vs.c">
+    <ClCompile Include="source\transform_vs.c">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="source\external\Remotery\Remotery.c">
+      <Filter>Source Files\external\Remotery</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="math.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="source\common_shader.h">
+      <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

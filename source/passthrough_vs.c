@@ -1,28 +1,25 @@
 #include "math.h"
+#include "common_shader.h"
 
 typedef v2f32 float2;
 typedef v3f32 float3;
 typedef v4f32 float4;
-
-struct Passthrough_Vertex_Shader {
-	struct Vs_Input {
+	
+struct Vs_Input {
 	float4 POSITION;
 	float3 COLOR;
-	} vs_input;
+} vs_input;
 
-	struct Vs_Output {
+struct Vs_Output {
 	float4 SV_POSITION;
 	float3 COLOR;
 	float  _pad;
-	} vs_output;
-
-	void (*vs_main)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, u32 vertex_id);
-};
+} vs_output;
 
 typedef struct Vs_Input Vs_Input;
 typedef struct Vs_Output Vs_Output;
 
-void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, u32 vertex_id) {
+static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, u32 vertex_id) {
 	Vs_Input *p_in = (Vs_Input*)(p_vertex_input_data) + vertex_id;
 	Vs_Output *p_out = (Vs_Output*)p_vertex_output_data + vertex_id;
 	
@@ -30,4 +27,4 @@ void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data, const 
 	p_out->COLOR = p_in->COLOR;
 }
 
-static struct Passthrough_Vertex_Shader passthrough_vs = { {0.f,0.f,}, {0.f,0.f,0.f,0.f}, vs_main };
+VertexShader passthrough_vs = { sizeof(Vs_Input), sizeof(Vs_Output),  vs_main };
