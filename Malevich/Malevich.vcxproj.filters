@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Source Files\External">
+      <UniqueIdentifier>{c1f3866c-db6b-4da6-b249-7d386ef425d2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
@@ -22,6 +25,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="passthrough_ps.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Remotery.c">
+      <Filter>Source Files\External</Filter>
+    </ClCompile>
+    <ClCompile Include="transform_vs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

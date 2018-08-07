@@ -28,4 +28,4 @@ void ps_main(void *p_fragment_input_data, void *p_fragment_output_data) {
 	p_out->SV_TARGET = (float4) { p_in->COLOR.x, p_in->COLOR.y, p_in->COLOR.z, 1.f };
 }
 
-static struct Passthrough_Pixel_Shader pass_through_ps = { { 0.f,0.f, },{ 0.f,0.f,0.f,0.f }, ps_main };
+static struct Passthrough_Pixel_Shader passthrough_ps = { { 0.f,0.f, },{ 0.f,0.f,0.f,0.f }, ps_main };
