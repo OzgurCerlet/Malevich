@@ -41,19 +41,7 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	float4 pos_cs = m4x4f32_mul_v4f32(p_cb->clip_from_world, pos_ws);
 
 	p_out->SV_POSITION = pos_cs;
-	if(vertex_id / 3) {
-		if(vertex_id == 3)
-			p_out->COLOR = (float3) { 1.0, 0.0, 0.0f };
-		else if(vertex_id == 4) {
-			p_out->COLOR = (float3) { 0.0, 1.0, 0.0f };
-		}
-		else {
-			p_out->COLOR = (float3) { 0.0, 0.0, 1.0f };
-		}
-	}
-	else {
-		p_out->COLOR =  (float3) { 1.0, 1.0, 1.0f };
-	}
+	p_out->COLOR =  (float3) { p_in->NORMAL.x * 0.5 + 0.5, p_in->NORMAL.y * 0.5 + 0.5, p_in->NORMAL.z * 0.5 + 0.5};
 }
 
 VertexShader transform_vs = { sizeof(Vs_Input), sizeof(Vs_Output), vs_main };

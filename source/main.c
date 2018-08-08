@@ -11,9 +11,6 @@
 #include "common_shader.h"
 #include "external/Remotery/Remotery.h"
 #include "external/octarine/octarine_mesh.h"
-//#include "passthrough_vs.c"
-//#include "transform_vs.c"
-#include "passthrough_ps.c"
 
 #pragma comment(lib, "octarine_mesh.lib")
 
@@ -30,6 +27,7 @@ f32 depth_buffer[WIDTH][HEIGHT];
 
 extern VertexShader transform_vs;
 extern VertexShader passthrough_vs;
+extern PixelShader passthrough_ps;
 
 typedef struct MeshHeader {
 	uint32_t size;
@@ -394,6 +392,10 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 		setup.one_over_area = fabs(1.f / (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)));
 
+		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3)) = a_vertex_positions[0];
+		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset)) = a_vertex_positions[1];
+		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset * 2)) = a_vertex_positions[2];
+
 		// Rasterizer
 		{
 			v2i32 min_bounds;
@@ -413,27 +415,27 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 			v4f32 *p_frag_data = malloc(per_fragment_data_size);
 			v4f32 *p_vertex_data = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
 			
-
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
-				for(i32 x = min_bounds.x; x<max_bounds.x; ++x) {
+				for(i32 x = min_bounds.x; x<=max_bounds.x; ++x) {
 					v2i32 frag_coords = { x,y };
 					if(is_inside_triangle(&setup, frag_coords)) { // use edge functions for inclusion testing					
 						v2f32 barycentric_coords = compute_barycentric_coords(&setup);
 						
-						memcpy(p_frag_data, p_vertex_data, per_fragment_data_size);		
 						for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-							p_frag_data[attribute_index] = interpolate_attribute(p_frag_data, barycentric_coords, num_attibutes, attribute_index);
+							p_frag_data[attribute_index] = interpolate_attribute(p_vertex_data, barycentric_coords, num_attibutes, attribute_index);
 						}
 
 						//Early-Z Test
 						// ASSUMPTION : Pixel shader does not change the depth of the fragment!  - Cerlet 
-						f32 fragment_z = p_vertex_data->z;
+						f32 fragment_z = p_frag_data->z;
 						f32 depth = graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x];
-						if(depth < fragment_z) { continue; }
+						if(depth > fragment_z) { 
+							continue; 
+						}
 
 						// Pixel Shader
 						v4f32 fragment_out_color;
-						graphics_pipeline.ps.shader(p_vertex_data, (void*)&fragment_out_color);
+						graphics_pipeline.ps.shader(p_frag_data, (void*)&fragment_out_color);
 						// Output Merger
 						graphics_pipeline.om.p_colors[y*(i32)graphics_pipeline.rs.viewport.width+x] = encode_color_as_u32(fragment_out_color.xyz);
 						graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x] = fragment_z;
@@ -486,7 +488,7 @@ void render() {
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
 	//const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
 	//clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
-	clear_depth_stencil_view(1.0);
+	clear_depth_stencil_view(0.0);
 	draw_indexed(test_mesh.header.index_count);
 }
 
@@ -499,7 +501,7 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/pyramid.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(true); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -511,7 +513,7 @@ void init() {
 	}
 
 	{ // Init Camera
-		camera.pos = (v3f32){ 0.0f, 0.0f, -1.0f};
+		camera.pos = (v3f32){ 2.0f, 0.0f, 0.5f};
 		camera.yaw_in_degrees = 0.0;
 		camera.pitch_in_degrees = 0.0;
 		camera.roll_in_degrees = 0.0;
@@ -552,14 +554,14 @@ void init() {
 
 		// Left-handed +y : up, +x: right View Space -> Right-handed +z : up, -y: right World Space
 		static const m4x4f32 change_of_basis = {
-			0.0, 0.0,-1.0, 0,
+			0.0, 0.0, -1.0, 0,
 			1.0, 0.0, 0.0, 0,
-			0.0, 1.0, 0.0, 0,
+			0.0, -1.0, 0.0, 0,
 			0.0, 0.0, 0.0, 1.0
 		};
 
 		m4x4f32 world_from_view = m4x4f32_mul_m4x4f32( &rotation_yaw, &rotation_pitch);
-		//world_from_view = m4x4f32_mul_m4x4f32(&change_of_basis, &world_from_view);
+		world_from_view = m4x4f32_mul_m4x4f32(&change_of_basis, &world_from_view);
 		world_from_view.m03 = camera.pos.x;
 		world_from_view.m13 = camera.pos.y;
 		world_from_view.m23 = camera.pos.z;
