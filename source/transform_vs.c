@@ -41,12 +41,6 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	float4 pos_cs = m4x4f32_mul_v4f32(&p_cb->clip_from_world, pos_ws);
 
 	p_out->SV_POSITION = pos_cs;
-	//if(vertex_id < 3) {
-	//	p_out->COLOR = (float3) { 1.0, 0.0, 0.0 };
-	//}
-	//else {
-	//	p_out->COLOR = (float3) { 0.0, 1.0, 0.0 };
-	//}
 	p_out->COLOR = (float3) { p_in->NORMAL.x, p_in->NORMAL.y, p_in->NORMAL.z };
 }
 

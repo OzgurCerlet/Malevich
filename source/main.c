@@ -24,6 +24,7 @@ u32 frame_buffer[WIDTH][HEIGHT];
 f32 depth_buffer[WIDTH][HEIGHT];
 
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
+#define PIXEL_SHADER_INPUT_REGISTER_COUNT 32
 
 extern VertexShader transform_vs;
 extern VertexShader passthrough_vs;
@@ -110,11 +111,17 @@ typedef struct Setup {
 }Setup;
 
 typedef struct Triangle {
-	Setup setup;
-	i32 x[3];
-	i32 y[3];
 	v4f32 *p_attributes;
+	v2i32 min_bounds;
+	v2i32 max_bounds;
+	Setup setup;
 } Triangle;
+
+typedef struct Fragment {
+	v4f32 *p_attributes;
+	v2i32 coordinates;
+	v2f32 barycentric_coords;
+} Fragment;
 
 typedef struct PerFrameCB {
 	m4x4f32 clip_from_world;
@@ -227,6 +234,10 @@ void error_win32(const char* func_name, DWORD last_error) {
 	LocalFree(error_msg);
 }
 
+inline u32 encode_color_as_u32(v3f32 color) {
+	return (((i32)(color.x*255.99f)) << 16) + (((i32)(color.y*255.99f)) << 8) + (((i32)(color.z*255.99f)));
+}
+
 inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32 y0, i32 x1, i32 y1) {
 	i32 a = y0 - y1;
 	i32 b = x1 - x0;
@@ -239,10 +250,6 @@ inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32
 	p_edge->a = a;
 	p_edge->b = b;
 	p_edge->c = c;
-}
-
-inline u32 encode_color_as_u32(v3f32 color) {
-	return (((i32)(color.x*255.99f)) << 16) + (((i32)(color.y*255.99f)) << 8) + (((i32)(color.z*255.99f)));
 }
 
 inline bool is_inside_edge(Setup *p_setup, u32 edge_index, v2i32 frag_coord) {
@@ -275,25 +282,7 @@ inline v2f32 compute_barycentric_coords(Setup *p_setup) {
 	return barycentric_coords;
 }
 
-inline v4f32 interpolate_attribute(v4f32 *p_triangle_vertex_data, v2f32 barycentric_coords, u8 num_attributes_per_vertex, u8 attribute_index) {
-	v4f32 v0_attribute = *(p_triangle_vertex_data + attribute_index);
-	v4f32 v1_attribute = *(p_triangle_vertex_data + attribute_index + num_attributes_per_vertex);
-	v4f32 v2_attribute = *(p_triangle_vertex_data + attribute_index + num_attributes_per_vertex * 2);
-	
-	return v0_attribute = 
-		v4f32_add_v4f32(v0_attribute,
-			v4f32_add_v4f32(
-				v4f32_mul_f32(
-					v4f32_subtract_v4f32(v1_attribute, v0_attribute), barycentric_coords.x
-				), 
-				v4f32_mul_f32(
-					v4f32_subtract_v4f32(v2_attribute, v0_attribute), barycentric_coords.y
-				)
-			)
-		);
-}
-
-inline v4f32 interpolate_attribute_(v4f32 *p_attributes, v2f32 barycentric_coords, u8 num_attributes_per_vertex) {
+inline v4f32 interpolate_attribute(const v4f32 *p_attributes, v2f32 barycentric_coords, u8 num_attributes_per_vertex) {
 	v4f32 v0_attribute = *(p_attributes );
 	v4f32 v1_attribute = *(p_attributes + num_attributes_per_vertex);
 	v4f32 v2_attribute = *(p_attributes + num_attributes_per_vertex * 2);
@@ -376,11 +365,12 @@ void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data,
 	rmt_EndCPUSample();
 }
 
-void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, Triangle **pp_triangles) {
+void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, u32 *p_max_possible_fragment_count, Triangle **pp_triangles) {
 	rmt_BeginCPUSample(primitive_assembly_stage, 0);
 	// Primitive Assembly
 	*pp_triangles = malloc(sizeof(Triangle) *triangle_count);
 	u32 assembled_triangle_count = 0;
+	u32 max_possible_fragment_count = 0;
 	u32 per_vertex_offset = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	for(u32 triangle_index = 0; triangle_index < triangle_count; ++triangle_index) {
 
@@ -458,9 +448,9 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 
 		// triangle setup
 		signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]); // TODO(cerlet): Implement face culling!
-		if(signed_area == 0) { // degenerate triangle 
-			continue;
-		}
+		if(signed_area == 0) { continue; }; // degenerate triangle 
+
+		if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
 		Setup setup;
 		set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
@@ -474,17 +464,86 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 
 		Triangle *p_current_triangle = (*pp_triangles) + assembled_triangle_count++;
 		p_current_triangle->setup = setup;
-		p_current_triangle->x[0] = x[0];
-		p_current_triangle->x[1] = x[1];
-		p_current_triangle->x[2] = x[2];
-		p_current_triangle->y[0] = y[0];
-		p_current_triangle->y[1] = y[1];
-		p_current_triangle->y[2] = y[2];
+
+		v2i32 min_bounds;
+		v2i32 max_bounds;
+		min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+		min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+		min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
+		min_bounds.y = MAX(min_bounds.y, 0);
+		// max corner
+		max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+		max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+		max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
+		max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
+
+		max_possible_fragment_count += ((max_bounds.x - min_bounds.x + 1 ) * (max_bounds.y - min_bounds.y + 1));
+		p_current_triangle->min_bounds = min_bounds;
+		p_current_triangle->max_bounds = max_bounds;
 
 		p_current_triangle->p_attributes = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
 	}
 
 	*p_assembled_triangle_count = assembled_triangle_count;
+	*p_max_possible_fragment_count = max_possible_fragment_count;
+	rmt_EndCPUSample();
+}
+
+void run_rasterizer( u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_num_fragments, Fragment **pp_fragments) {
+	rmt_BeginCPUSample(rasterizer_stage, 0);
+	Viewport viewport = graphics_pipeline.rs.viewport;
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+	u32 current_fragment_index = 0;
+	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
+
+	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
+		Triangle* p_tri = p_triangles + triangle_index;
+		v4f32* p_attributes = p_tri->p_attributes;
+
+		for(i32 y = p_tri->min_bounds.y; y <= p_tri->max_bounds.y; ++y) {
+			for(i32 x = p_tri->min_bounds.x; x <= p_tri->max_bounds.x; ++x) {
+				v2i32 frag_coords = { x,y };
+				if(is_inside_triangle(&p_tri->setup, frag_coords)) { // use edge functions for inclusion testing					
+					v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+					v4f32 frag_pos_ss = interpolate_attribute(p_tri->p_attributes, barycentric_coords, num_attibutes);
+
+					// Early-Z Test
+					// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+					f32 fragment_z = frag_pos_ss.z;
+					f32 depth = graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x];
+					if(depth > fragment_z) {
+						continue;
+					}
+					graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x] = fragment_z;
+
+					Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
+					p_fragment->coordinates = frag_coords;
+					p_fragment->p_attributes = p_attributes;
+					p_fragment->barycentric_coords = barycentric_coords;
+				}
+			}
+		}
+	}
+	*p_num_fragments = current_fragment_index;
+	rmt_EndCPUSample();
+}
+
+void run_pixel_shader_stage(const Fragment* p_fragments, u32 num_fragments) {
+	rmt_BeginCPUSample(pixel_shader_stage, 0);
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+	for(u32 frag_index = 0; frag_index < num_fragments; ++frag_index) {
+		Fragment *p_fragment = p_fragments + frag_index;
+		v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
+		for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+			a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, p_fragment->barycentric_coords, num_attibutes);
+		}
+
+		// Pixel Shader
+		v4f32 fragment_out_color;
+		graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color);
+		// Output Merger
+		graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+	}
 	rmt_EndCPUSample();
 }
 
@@ -498,71 +557,27 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	void *p_vertex_output_data = NULL;
 	run_vertex_shader_stage(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
 
-	free(p_vertex_input_data);
-
-	// Primitive Assembly:
 	assert((index_count % 3) == 0);
 	u32 triangle_count = index_count / 3;
 
 	Triangle *p_triangles = NULL;
 	u32 assembled_triangle_count = 0;
-	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles);
+	u32 max_possible_fragment_count = 0;
+	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &max_possible_fragment_count, &p_triangles);
 	
 	Viewport viewport = graphics_pipeline.rs.viewport;
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
 
-	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
-		Triangle* p_tri = p_triangles + triangle_index;
-		// Rasterizer
-		{
-			v2i32 min_bounds;
-			v2i32 max_bounds;
-			min_bounds.x = MIN3(p_tri->x[0], p_tri->x[1], p_tri->x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			min_bounds.y = MIN3(p_tri->y[0], p_tri->y[1], p_tri->y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
-			min_bounds.y = MAX(min_bounds.y, 0);
-			// max corner
-			max_bounds.x = MAX3(p_tri->x[0], p_tri->x[1], p_tri->x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			max_bounds.y = MAX3(p_tri->y[0], p_tri->y[1], p_tri->y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
-			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
+	Fragment *p_fragments = NULL;
+	u32 num_fragments;
+	run_rasterizer(max_possible_fragment_count, assembled_triangle_count, p_triangles, &num_fragments, &p_fragments);
 
-			u32 per_fragment_data_size = sizeof(v4f32)*num_attibutes;
-			v4f32 *p_frag_data = malloc(per_fragment_data_size);
+	run_pixel_shader_stage(p_fragments, num_fragments);
 
-			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
-				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
-					v2i32 frag_coords = { x,y };
-					if(is_inside_triangle(&p_tri->setup, frag_coords)) { // use edge functions for inclusion testing					
-						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-
-						for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-							//p_frag_data[attribute_index] = interpolate_attribute(p_vertex_data, barycentric_coords, num_attibutes, attribute_index);
-							p_frag_data[attribute_index] = interpolate_attribute_(p_tri->p_attributes + attribute_index, barycentric_coords, num_attibutes);
-						}
-
-						// Early-Z Test
-						// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
-						f32 fragment_z = p_frag_data->z;
-						f32 depth = graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x];
-						if(depth > fragment_z) {
-							continue;
-						}
-
-						// Pixel Shader
-						v4f32 fragment_out_color;
-						graphics_pipeline.ps.shader(p_frag_data, (void*)&fragment_out_color);
-						// Output Merger
-						graphics_pipeline.om.p_colors[y*(i32)graphics_pipeline.rs.viewport.width + x] = encode_color_as_u32(fragment_out_color.xyz);
-						graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x] = fragment_z;
-					}
-				}
-			}
-			free(p_frag_data);
-		}
-	}
-
+	free(p_vertex_input_data);
 	free(p_vertex_output_data);
+	free(p_triangles);
+	free(p_fragments);
 	rmt_EndCPUSample();
 }
 
