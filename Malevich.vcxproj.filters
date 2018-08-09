@@ -18,26 +18,32 @@
     <Filter Include="Source Files\external\octarine">
       <UniqueIdentifier>{7945257b-1a69-46a3-8d55-06db06bda3fa}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\shaders">
+      <UniqueIdentifier>{c8a6e973-67a3-4f05-a83b-50e51a7641c8}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="source\passthrough_ps.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="source\passthrough_vs.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="source\transform_vs.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="source\external\Remotery\Remotery.c">
       <Filter>Source Files\external\Remotery</Filter>
+    </ClCompile>
+    <ClCompile Include="source\transform_vs.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="source\passthrough_vs.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="source\passthrough_ps.c">
+      <Filter>Source Files\shaders</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\common_shader.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="source\math.h">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>

@@ -103,11 +103,18 @@ typedef struct EdgeFunction{
 	i32 c;
 } EdgeFunction;
 
-typedef struct TriangleSetup {
+typedef struct Setup {
 	EdgeFunction a_edge_functions[3];
 	i32 a_signed_distances[3];
 	f32 one_over_area;
-}TriangleSetup;
+}Setup;
+
+typedef struct Triangle {
+	Setup setup;
+	i32 x[3];
+	i32 y[3];
+	v4f32 *p_attributes;
+} Triangle;
 
 typedef struct PerFrameCB {
 	m4x4f32 clip_from_world;
@@ -117,23 +124,35 @@ typedef struct Camera {
 	m4x4f32 clip_from_view;
 	m4x4f32 view_from_world;
 	v3f32 pos;
-	f32 yaw_in_degrees;
-	f32 pitch_in_degrees;
-	f32 roll_in_degrees;
+	f32 yaw_rad;
+	f32 pitch_rad;
 	f32 fov_y_angle_deg;
 	f32 near_plane;
+	f32 far_plane;
 } Camera;
+
+typedef struct Input {
+	v2f32 last_mouse_pos;
+	v2f32 mouse_pos;
+	bool is_right_mouse_button_pressed;
+	bool is_a_pressed;
+	bool is_d_pressed;
+	bool is_e_pressed;
+	bool is_q_pressed;
+	bool is_s_pressed;
+	bool is_w_pressed;
+} Input;
 
 Mesh test_mesh;
 PerFrameCB per_frame_cb;
 Camera camera;
+Input input;
 
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
 {
 	PAINTSTRUCT paint_struct;
 	HDC h_device_context;
-	switch(msg)
-	{
+	switch(msg) {
 		case WM_PAINT:
 			h_device_context = BeginPaint(h_window, &paint_struct);
 			BITMAPINFO info = { 0 };
@@ -147,6 +166,36 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 			StretchDIBits(h_device_context, 0, 0, frame_width, frame_height, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
 			EndPaint(h_window, &paint_struct);
 			break;
+		case WM_KEYDOWN: {
+			switch(w_param){
+				case 'A': input.is_a_pressed = true; break;
+				case 'D': input.is_d_pressed = true; break;
+				case 'E': input.is_e_pressed = true; break;
+				case 'Q': input.is_q_pressed = true; break;
+				case 'S': input.is_s_pressed = true; break;
+				case 'W': input.is_w_pressed = true; break;
+			}
+		} break;
+		case WM_KEYUP: {
+			switch(w_param) {
+				case 'A': input.is_a_pressed = false; break;
+				case 'D': input.is_d_pressed = false; break;
+				case 'E': input.is_e_pressed = false; break;
+				case 'Q': input.is_q_pressed = false; break;
+				case 'S': input.is_s_pressed = false; break;
+				case 'W': input.is_w_pressed = false; break;
+			}
+		} break;
+		case WM_MOUSEMOVE: {
+			input.mouse_pos.x = (signed short)(l_param);
+			input.mouse_pos.y = (signed short)(l_param >> 16);
+		} break;
+		case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: {
+			input.is_right_mouse_button_pressed = true;
+		} break;
+		case WM_RBUTTONUP: {
+			input.is_right_mouse_button_pressed = false;
+		} break;
 		case WM_DESTROY:
 			PostQuitMessage(0);
 			break;
@@ -196,7 +245,7 @@ inline u32 encode_color_as_u32(v3f32 color) {
 	return (((i32)(color.x*255.99f)) << 16) + (((i32)(color.y*255.99f)) << 8) + (((i32)(color.z*255.99f)));
 }
 
-inline bool is_inside_edge(TriangleSetup *p_setup, u32 edge_index, v2i32 frag_coord) {
+inline bool is_inside_edge(Setup *p_setup, u32 edge_index, v2i32 frag_coord) {
 	i32 a = p_setup->a_edge_functions[edge_index].a;
 	i32 b = p_setup->a_edge_functions[edge_index].b;
 	i32 c = p_setup->a_edge_functions[edge_index].c;
@@ -210,7 +259,7 @@ inline bool is_inside_edge(TriangleSetup *p_setup, u32 edge_index, v2i32 frag_co
 	return false;
 }
 
-inline bool is_inside_triangle(TriangleSetup *p_setup, v2i32 frag_coord) {
+inline bool is_inside_triangle(Setup *p_setup, v2i32 frag_coord) {
 	bool w0 = is_inside_edge(p_setup, 0, frag_coord);
 	bool w1 = is_inside_edge(p_setup, 1, frag_coord);
 	bool w2 = is_inside_edge(p_setup, 2, frag_coord);
@@ -218,7 +267,7 @@ inline bool is_inside_triangle(TriangleSetup *p_setup, v2i32 frag_coord) {
 }
 
 // In this context, barycentric coords (u,v,w) = areal coordinates (A1/A,A2/A,A0/A) => u+v+w = 1;
-inline v2f32 compute_barycentric_coords(TriangleSetup *p_setup) {
+inline v2f32 compute_barycentric_coords(Setup *p_setup) {
 	v2f32 barycentric_coords;
 	barycentric_coords.x = (float)(p_setup->a_signed_distances[1] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
 	barycentric_coords.y = (float)(p_setup->a_signed_distances[2] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
@@ -237,6 +286,24 @@ inline v4f32 interpolate_attribute(v4f32 *p_triangle_vertex_data, v2f32 barycent
 				v4f32_mul_f32(
 					v4f32_subtract_v4f32(v1_attribute, v0_attribute), barycentric_coords.x
 				), 
+				v4f32_mul_f32(
+					v4f32_subtract_v4f32(v2_attribute, v0_attribute), barycentric_coords.y
+				)
+			)
+		);
+}
+
+inline v4f32 interpolate_attribute_(v4f32 *p_attributes, v2f32 barycentric_coords, u8 num_attributes_per_vertex) {
+	v4f32 v0_attribute = *(p_attributes );
+	v4f32 v1_attribute = *(p_attributes + num_attributes_per_vertex);
+	v4f32 v2_attribute = *(p_attributes + num_attributes_per_vertex * 2);
+
+	return v0_attribute =
+		v4f32_add_v4f32(v0_attribute,
+			v4f32_add_v4f32(
+				v4f32_mul_f32(
+					v4f32_subtract_v4f32(v1_attribute, v0_attribute), barycentric_coords.x
+				),
 				v4f32_mul_f32(
 					v4f32_subtract_v4f32(v2_attribute, v0_attribute), barycentric_coords.y
 				)
@@ -272,13 +339,15 @@ u32 suprematist_index_buffer[] = {
 // blue triangle {{60,410},{545,614},{67,887}} color {45,44,83}
 // background color {227, 223, 216}
 
-void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_location, int base_vertex_location*/) {
-	
+void run_input_assembler_stage(u32 index_count, void **pp_vertex_input_data) {
+	rmt_BeginCPUSample(input_assambler_stage, 0);
 	// Input Assembler
 	if(graphics_pipeline.ia.primitive_topology != PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
 		DebugBreak();
 	}
 
+	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
+	// TODO(cerlet): Implement some kind of post-transform vertex cache.
 	u32 vertex_count = index_count;
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
@@ -289,7 +358,12 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		memcpy(p_vertex, ((u8*)graphics_pipeline.ia.p_vertex_buffer) + vertex_offset, per_vertex_input_data_size);
 		p_vertex += per_vertex_input_data_size;
 	}
+	*pp_vertex_input_data = p_vertex_input_data;
+	rmt_EndCPUSample();
+}
 
+void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
+	rmt_BeginCPUSample(vertex_shader_stage, 0);
 	// Vertex Shader
 	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
@@ -297,30 +371,35 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	for(u32 vertex_id = 0; vertex_id < vertex_count; ++vertex_id) {
 		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, vertex_id);
 	}
+	*p_per_vertex_output_data_size = per_vertex_output_data_size;
+	*pp_vertex_output_data = p_vertex_output_data;
+	rmt_EndCPUSample();
+}
 
-	free(p_vertex_input_data);
-
-	// Primitive Assembly:
-	assert((index_count % 3) == 0);
-	u32 triangle_count = index_count / 3;
+void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, Triangle **pp_triangles) {
+	rmt_BeginCPUSample(primitive_assembly_stage, 0);
+	// Primitive Assembly
+	*pp_triangles = malloc(sizeof(Triangle) *triangle_count);
+	u32 assembled_triangle_count = 0;
+	u32 per_vertex_offset = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	for(u32 triangle_index = 0; triangle_index < triangle_count; ++triangle_index) {
-		
+
 		v4f32 a_vertex_positions[3];
-		u32 per_vertex_offset = per_vertex_output_data_size;
-		a_vertex_positions[0] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 ));
+		a_vertex_positions[0] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3));
 		a_vertex_positions[1] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset));
 		a_vertex_positions[2] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset * 2));
-		
+
 		// viewport culling
 		if(a_vertex_positions[0].w == 0 || a_vertex_positions[1].w == 0 || a_vertex_positions[2].w == 0) {
 			continue;// degenerate triangle
 		}
 
-		if( (a_vertex_positions[0].x < -a_vertex_positions[0].w && a_vertex_positions[1].x < -a_vertex_positions[1].w && a_vertex_positions[2].x < -a_vertex_positions[2].w) ||
+		// clip space culling
+		if((a_vertex_positions[0].x < -a_vertex_positions[0].w && a_vertex_positions[1].x < -a_vertex_positions[1].w && a_vertex_positions[2].x < -a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].x > +a_vertex_positions[0].w && a_vertex_positions[1].x > +a_vertex_positions[1].w && a_vertex_positions[2].x > +a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].y < -a_vertex_positions[0].w && a_vertex_positions[1].y < -a_vertex_positions[1].w && a_vertex_positions[2].y < -a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].y > +a_vertex_positions[0].w && a_vertex_positions[1].y > +a_vertex_positions[1].w && a_vertex_positions[2].y > +a_vertex_positions[2].w) ||
-			(a_vertex_positions[0].z < 0.f						&& a_vertex_positions[1].z < 0.f					  && a_vertex_positions[2].z < 0.f					   ) ||
+			(a_vertex_positions[0].z < 0.f						&& a_vertex_positions[1].z < 0.f					  && a_vertex_positions[2].z < 0.f) ||
 			(a_vertex_positions[0].z > +a_vertex_positions[1].w	&& a_vertex_positions[1].z > +a_vertex_positions[1].w && a_vertex_positions[2].z > +a_vertex_positions[2].w)) {
 			continue;
 		}
@@ -330,49 +409,45 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		// ASSUMPTION(cerlet): No need for clipping!
 
 		// projection : Clip Space --> NDC Space
-		f32 factor;
-		factor = 1.0 / a_vertex_positions[0].w;
-		a_vertex_positions[0].x *= factor;
-		a_vertex_positions[0].y *= factor;
-		a_vertex_positions[0].z *= factor;
-		a_vertex_positions[0].w *= factor;
+		f32 perspective_factor;
+		perspective_factor = 1.0 / a_vertex_positions[0].w;
+		a_vertex_positions[0].x *= perspective_factor;
+		a_vertex_positions[0].y *= perspective_factor;
+		a_vertex_positions[0].z *= perspective_factor;
+		a_vertex_positions[0].w *= perspective_factor;
 
-		factor = 1.0 / a_vertex_positions[1].w;
-		a_vertex_positions[1].x *= factor;
-		a_vertex_positions[1].y *= factor;
-		a_vertex_positions[1].z *= factor;
-		a_vertex_positions[1].w *= factor;
+		perspective_factor = 1.0 / a_vertex_positions[1].w;
+		a_vertex_positions[1].x *= perspective_factor;
+		a_vertex_positions[1].y *= perspective_factor;
+		a_vertex_positions[1].z *= perspective_factor;
+		a_vertex_positions[1].w *= perspective_factor;
 
-		factor = 1.0 / a_vertex_positions[2].w;
-		a_vertex_positions[2].x *= factor;
-		a_vertex_positions[2].y *= factor;
-		a_vertex_positions[2].z *= factor;
-		a_vertex_positions[2].w *= factor;
+		perspective_factor = 1.0 / a_vertex_positions[2].w;
+		a_vertex_positions[2].x *= perspective_factor;
+		a_vertex_positions[2].y *= perspective_factor;
+		a_vertex_positions[2].z *= perspective_factor;
+		a_vertex_positions[2].w *= perspective_factor;
 
 		// viewport transformation : NDC Space --> Screen Space
 		Viewport viewport = graphics_pipeline.rs.viewport;
 		v4f32 vertex_pos_ss;
 		m4x4f32 screen_from_ndc = {
 			viewport.width*0.5, 0, 0, viewport.width*0.5 + viewport.top_left_x,
-			0, viewport.height*0.5, 0, viewport.height*0.5 + viewport.top_left_y,
-			0, 0, viewport.max_depth-viewport.min_depth, viewport.min_depth,
+			0, -viewport.height*0.5, 0, viewport.height*0.5 + viewport.top_left_y,
+			0, 0, viewport.max_depth - viewport.min_depth, viewport.min_depth,
 			0,	0,	0,	1
 		};
 
-		//v4f32 test = { 1, 0, 0, 1 };
-		//test = m4x4f32_mul_v4f32(screen_from_ndc, test);
-		
-		
-		vertex_pos_ss = m4x4f32_mul_v4f32(screen_from_ndc, a_vertex_positions[0]);
+		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[0]);
 		a_vertex_positions[0] = vertex_pos_ss;
 
-		vertex_pos_ss = m4x4f32_mul_v4f32(screen_from_ndc, a_vertex_positions[1]);
+		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[1]);
 		a_vertex_positions[1] = vertex_pos_ss;
 
-		vertex_pos_ss = m4x4f32_mul_v4f32(screen_from_ndc, a_vertex_positions[2]);
+		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[2]);
 		a_vertex_positions[2] = vertex_pos_ss;
 
-		// convert ss posions to fixed-point representation and snap
+		// convert ss positions to fixed-point representation and snap
 		i32 x[3], y[3], signed_area;
 		x[0] = floor(a_vertex_positions[0].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
 		x[1] = floor(a_vertex_positions[1].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
@@ -385,8 +460,9 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]); // TODO(cerlet): Implement face culling!
 		if(signed_area == 0) { // degenerate triangle 
 			continue;
-		}	
-		TriangleSetup setup;
+		}
+
+		Setup setup;
 		set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
 		set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
 		set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
@@ -396,61 +472,102 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset)) = a_vertex_positions[1];
 		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset * 2)) = a_vertex_positions[2];
 
+		Triangle *p_current_triangle = (*pp_triangles) + assembled_triangle_count++;
+		p_current_triangle->setup = setup;
+		p_current_triangle->x[0] = x[0];
+		p_current_triangle->x[1] = x[1];
+		p_current_triangle->x[2] = x[2];
+		p_current_triangle->y[0] = y[0];
+		p_current_triangle->y[1] = y[1];
+		p_current_triangle->y[2] = y[2];
+
+		p_current_triangle->p_attributes = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
+	}
+
+	*p_assembled_triangle_count = assembled_triangle_count;
+	rmt_EndCPUSample();
+}
+
+void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_location, int base_vertex_location*/) {
+	rmt_BeginCPUSample(draw_indexed, 0);
+
+	void *p_vertex_input_data = NULL;
+	run_input_assembler_stage(index_count, &p_vertex_input_data);
+	
+	u32 per_vertex_output_data_size = 0;
+	void *p_vertex_output_data = NULL;
+	run_vertex_shader_stage(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
+
+	free(p_vertex_input_data);
+
+	// Primitive Assembly:
+	assert((index_count % 3) == 0);
+	u32 triangle_count = index_count / 3;
+
+	Triangle *p_triangles = NULL;
+	u32 assembled_triangle_count = 0;
+	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles);
+	
+	Viewport viewport = graphics_pipeline.rs.viewport;
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
+	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
+		Triangle* p_tri = p_triangles + triangle_index;
 		// Rasterizer
 		{
 			v2i32 min_bounds;
 			v2i32 max_bounds;
-			min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			min_bounds.x = MIN3(p_tri->x[0], p_tri->x[1], p_tri->x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			min_bounds.y = MIN3(p_tri->y[0], p_tri->y[1], p_tri->y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
 			min_bounds.y = MAX(min_bounds.y, 0);
 			// max corner
-			max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			max_bounds.x = MAX3(p_tri->x[0], p_tri->x[1], p_tri->x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			max_bounds.y = MAX3(p_tri->y[0], p_tri->y[1], p_tri->y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
 			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
-			
-			u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
 			u32 per_fragment_data_size = sizeof(v4f32)*num_attibutes;
 			v4f32 *p_frag_data = malloc(per_fragment_data_size);
-			v4f32 *p_vertex_data = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
-			
+
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
-				for(i32 x = min_bounds.x; x<=max_bounds.x; ++x) {
+				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
 					v2i32 frag_coords = { x,y };
-					if(is_inside_triangle(&setup, frag_coords)) { // use edge functions for inclusion testing					
-						v2f32 barycentric_coords = compute_barycentric_coords(&setup);
-						
+					if(is_inside_triangle(&p_tri->setup, frag_coords)) { // use edge functions for inclusion testing					
+						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+
 						for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-							p_frag_data[attribute_index] = interpolate_attribute(p_vertex_data, barycentric_coords, num_attibutes, attribute_index);
+							//p_frag_data[attribute_index] = interpolate_attribute(p_vertex_data, barycentric_coords, num_attibutes, attribute_index);
+							p_frag_data[attribute_index] = interpolate_attribute_(p_tri->p_attributes + attribute_index, barycentric_coords, num_attibutes);
 						}
 
-						//Early-Z Test
-						// ASSUMPTION : Pixel shader does not change the depth of the fragment!  - Cerlet 
+						// Early-Z Test
+						// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
 						f32 fragment_z = p_frag_data->z;
 						f32 depth = graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x];
-						if(depth > fragment_z) { 
-							continue; 
+						if(depth > fragment_z) {
+							continue;
 						}
 
 						// Pixel Shader
 						v4f32 fragment_out_color;
 						graphics_pipeline.ps.shader(p_frag_data, (void*)&fragment_out_color);
 						// Output Merger
-						graphics_pipeline.om.p_colors[y*(i32)graphics_pipeline.rs.viewport.width+x] = encode_color_as_u32(fragment_out_color.xyz);
+						graphics_pipeline.om.p_colors[y*(i32)graphics_pipeline.rs.viewport.width + x] = encode_color_as_u32(fragment_out_color.xyz);
 						graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x] = fragment_z;
 					}
 				}
 			}
-
 			free(p_frag_data);
 		}
 	}
 
 	free(p_vertex_output_data);
+	rmt_EndCPUSample();
 }
 
 void clear_render_target_view(const f32 *p_clear_color) {
+	rmt_BeginCPUSample(clear_render_target_view, 0);
 	v3f32 clear_color = { p_clear_color[0],p_clear_color[1] ,p_clear_color[2] };
 	u32 encoded_clear = encode_color_as_u32(clear_color);
 	
@@ -459,17 +576,21 @@ void clear_render_target_view(const f32 *p_clear_color) {
 	while(frame_buffer_texel_count--) {
 		*p_texel++ = encoded_clear;
 	}
+	rmt_EndCPUSample();
 }
 
 void clear_depth_stencil_view(const f32 depth) {
+	rmt_BeginCPUSample(clear_depth_stencil_view, 0);
 	f32 *p_depth = depth_buffer;
 	u32 depth_buffer_texel_count = sizeof(depth_buffer) / sizeof(f32);
 	while(depth_buffer_texel_count--) {
 		*p_depth++ = depth;
 	}
+	rmt_EndCPUSample();
 }
 
 void render() {
+	rmt_BeginCPUSample(render, 0);
 	graphics_pipeline.ia.input_layout = transform_vs.in_vertex_size;
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;// suprematist_index_buffer;
@@ -486,22 +607,25 @@ void render() {
 
 	graphics_pipeline.om.p_colors = &frame_buffer[0][0];
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
-	//const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
-	//clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
+	const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
+	clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
 	clear_depth_stencil_view(0.0);
 	draw_indexed(test_mesh.header.index_count);
+	rmt_EndCPUSample();
 }
 
 void present(HWND h_window) {
+	rmt_BeginCPUSample(present, 0);
 	InvalidateRect(h_window, NULL, FALSE);
 	UpdateWindow(h_window);
+	rmt_EndCPUSample();
 }
 
 void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/pyramid.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/suzanne.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(true); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -513,12 +637,12 @@ void init() {
 	}
 
 	{ // Init Camera
-		camera.pos = (v3f32){ 2.0f, 0.0f, 0.5f};
-		camera.yaw_in_degrees = 0.0;
-		camera.pitch_in_degrees = 0.0;
-		camera.roll_in_degrees = 0.0;
-		camera.fov_y_angle_deg = 90.f;
+		camera.pos = (v3f32){ 2.0f, 0.0f, 0.0f};
+		camera.yaw_rad = 0.0;
+		camera.pitch_rad = 0.0;
+		camera.fov_y_angle_deg = 60.f;
 		camera.near_plane = 0.1;
+		camera.far_plane = 1000.1;
 
 		// clip from view transformation, view space : y - up, left-handed
 		float fov_y_angle_rad = TO_RADIANS(camera.fov_y_angle_deg);
@@ -534,8 +658,8 @@ void init() {
 
 		camera.clip_from_view = clip_from_view;
 
-		float cos_pitch = cos(TO_RADIANS(camera.pitch_in_degrees));
-		float sin_pitch = sin(TO_RADIANS(camera.pitch_in_degrees));
+		float cos_pitch = cos(camera.pitch_rad);
+		float sin_pitch = sin(camera.pitch_rad);
 		m4x4f32 rotation_pitch = { // pitch axis is x in view space
 			1.0, 0.0, 0.0, 0.0,
 			0.0, cos_pitch, sin_pitch, 0.0,
@@ -543,8 +667,8 @@ void init() {
 			0.0, 0.0, 0.0, 1.0
 		};
 
-		float cos_yaw = cos(TO_RADIANS(camera.yaw_in_degrees));
-		float sin_yaw = sin(TO_RADIANS(camera.yaw_in_degrees));
+		float cos_yaw = cos(camera.yaw_rad);
+		float sin_yaw = sin(camera.yaw_rad);
 		m4x4f32 rotation_yaw = { // yaw axis is y in view space
 			cos_yaw, 0.0, -sin_yaw, 0.0,
 			0.0, 1.0, 0.0, 0.0,
@@ -552,11 +676,11 @@ void init() {
 			0.0, 0.0, 0.0, 1.0
 		};
 
-		// Left-handed +y : up, +x: right View Space -> Right-handed +z : up, -y: right World Space
+		// View Space Left-handed +y : up, +x: right  -> World Space Right-handed +z : up, -y: right 
 		static const m4x4f32 change_of_basis = {
 			0.0, 0.0, -1.0, 0,
 			1.0, 0.0, 0.0, 0,
-			0.0, -1.0, 0.0, 0,
+			0.0, 1.0, 0.0, 0,
 			0.0, 0.0, 0.0, 1.0
 		};
 
@@ -565,10 +689,88 @@ void init() {
 		world_from_view.m03 = camera.pos.x;
 		world_from_view.m13 = camera.pos.y;
 		world_from_view.m23 = camera.pos.z;
-		camera.view_from_world = inverse(&world_from_view);
+		camera.view_from_world = m4x4f32_inverse(&world_from_view);
 	
 		per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
 	}
+}
+
+void update() {
+	rmt_BeginCPUSample(update, 0);
+
+	f32 delta_pitch_rad, delta_yaw_rad;
+	static f32 mouse_pos_scale = 0.0025f;
+	if(input.is_right_mouse_button_pressed) {
+		delta_pitch_rad = (input.mouse_pos.y - input.last_mouse_pos.y) * mouse_pos_scale;
+		delta_yaw_rad = (input.mouse_pos.x - input.last_mouse_pos.x) * mouse_pos_scale;
+	}
+	else {
+		delta_pitch_rad = 0.0;
+		delta_yaw_rad = 0.0;
+	}
+	input.last_mouse_pos = input.mouse_pos;
+
+	float yaw_rad = camera.yaw_rad;
+	yaw_rad += delta_yaw_rad;
+	if(yaw_rad > PI) yaw_rad -= TAU;
+	else if(yaw_rad <= -PI) yaw_rad += TAU;
+	camera.yaw_rad = yaw_rad;
+
+	float pitch_rad = camera.pitch_rad;
+	pitch_rad += delta_pitch_rad;
+	pitch_rad = min(PI_OVER_TWO, pitch_rad);
+	pitch_rad = max(-PI_OVER_TWO, pitch_rad);
+	camera.pitch_rad = pitch_rad;
+
+	static float move_speed_mps = 10.0f;
+	static float speed_scale = .06f;
+	static float delta_time_s = 0.016666f;
+
+	float forward = move_speed_mps * speed_scale * ((input.is_w_pressed ? delta_time_s : 0.0f) + (input.is_s_pressed ? -delta_time_s : 0.0f));
+	float strafe = move_speed_mps * speed_scale * ((input.is_d_pressed ? delta_time_s : 0.0f) + (input.is_a_pressed ? -delta_time_s : 0.0f));
+	float ascent = move_speed_mps * speed_scale * ((input.is_e_pressed ? delta_time_s : 0.0f) + (input.is_q_pressed ? -delta_time_s : 0.0f));
+	
+	float cos_pitch = cos(-camera.pitch_rad);
+	float sin_pitch = sin(-camera.pitch_rad);
+	m4x4f32 rotation_pitch = { // pitch axis is x in view space
+		1.0, 0.0, 0.0, 0.0,
+		0.0, cos_pitch, sin_pitch, 0.0,
+		0.0,-sin_pitch, cos_pitch, 0.0,
+		0.0, 0.0, 0.0, 1.0
+	};
+
+	float cos_yaw = cos(-camera.yaw_rad);
+	float sin_yaw = sin(-camera.yaw_rad);
+	m4x4f32 rotation_yaw = { // yaw axis is y in view space
+		cos_yaw, 0.0, -sin_yaw, 0.0,
+		0.0, 1.0, 0.0, 0.0,
+		sin_yaw, 0.0, cos_yaw, 0.0,
+		0.0, 0.0, 0.0, 1.0
+	};
+
+	// Left-handed +y : up, +x: right View Space -> Right-handed +z : up, -y: right World Space
+	static const m4x4f32 change_of_basis = {
+		0.0, 0.0,-1.0, 0,
+		1.0, 0.0, 0.0, 0,
+		0.0, 1.0, 0.0, 0,
+		0.0, 0.0, 0.0, 1.0
+	};
+
+	m4x4f32 world_from_view = m4x4f32_mul_m4x4f32(&rotation_yaw, &rotation_pitch);
+	world_from_view = m4x4f32_mul_m4x4f32(&change_of_basis, &world_from_view);
+	
+	v3f32 movement_vs = { strafe, ascent, forward };
+	movement_vs = m4x4f32_mul_v4f32(&world_from_view, v4f32_from_v3f32(movement_vs, 1.0f)).xyz;
+	camera.pos = v3f32_add_v3f32(camera.pos, movement_vs);
+	
+	world_from_view.m03 = camera.pos.x;
+	world_from_view.m13 = camera.pos.y;
+	world_from_view.m23 = camera.pos.z;
+	camera.view_from_world = m4x4f32_inverse(&world_from_view);
+
+	per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
+
+	rmt_EndCPUSample();
 }
 
 int CALLBACK WinMain(
@@ -623,10 +825,11 @@ int CALLBACK WinMain(
 			DispatchMessageA(&msg);
 		}
 		else {
-			rmt_BeginCPUSample(render, 0);
+			rmt_BeginCPUSample(Malevich, 0);
+			update();
 			render();
-			rmt_EndCPUSample();
 			present(h_window);
+			rmt_EndCPUSample();
 		}
 	}
 

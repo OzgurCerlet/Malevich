@@ -23,8 +23,9 @@ typedef double		f64;
 
 #define MAX3(x,y,z) (MAX(x,(MAX(y,z))))
 #define MIN3(x,y,z) (MIN(x,(MIN(y,z))))
-#define PI 3.141592654f
-
+#define PI			3.141592654f
+#define TAU			6.283185307f
+#define PI_OVER_TWO 1.570796326f
 #define TO_RADIANS(Degrees) (Degrees * (PI / 180.0f))
 #define TO_DEGREES(Radians) (Radians * (180.0f / PI))
 
@@ -90,26 +91,31 @@ typedef struct m4x4f32 {
 	};
 } m4x4f32;
 
+inline v4f32 v4f32_from_v3f32(v3f32 v, f32 w) {
+	v4f32 result = { v.x, v.y, v.z, w };
+	return result;
+}
+
 inline f32 v4f32_dot(v4f32 v0, v4f32 v1) {
 	f32 result = v0.x * v1.x + v0.y * v1.y + v0.z * v1.z + v0.w * v1.w;
 	return result;
 }
 
-inline v4f32 m4x4f32_mul_v4f32(m4x4f32 m, v4f32 v) {
-	v4f32 result = { v4f32_dot(m.r0, v), v4f32_dot(m.r1, v), v4f32_dot(m.r2, v), v4f32_dot(m.r3, v) };
+inline v4f32 m4x4f32_mul_v4f32(const m4x4f32 *p_m, v4f32 v) {
+	v4f32 result = { v4f32_dot(p_m->r0, v), v4f32_dot(p_m->r1, v), v4f32_dot(p_m->r2, v), v4f32_dot(p_m->r3, v) };
 	return result;
 }
 
-inline m4x4f32 m4x4f32_transpose(m4x4f32 *p_m0) {
+inline m4x4f32 m4x4f32_transpose(const m4x4f32 *p_m) {
 	m4x4f32 result = {
-		p_m0->m00, p_m0->m10, p_m0->m20, p_m0->m30,
-		p_m0->m01, p_m0->m11, p_m0->m21, p_m0->m31,
-		p_m0->m02, p_m0->m12, p_m0->m22, p_m0->m32,
-		p_m0->m03, p_m0->m13, p_m0->m23, p_m0->m33 };
+		p_m->m00, p_m->m10, p_m->m20, p_m->m30,
+		p_m->m01, p_m->m11, p_m->m21, p_m->m31,
+		p_m->m02, p_m->m12, p_m->m22, p_m->m32,
+		p_m->m03, p_m->m13, p_m->m23, p_m->m33 };
 	return result;
 }
 
-inline m4x4f32 m4x4f32_mul_m4x4f32(m4x4f32 *p_m0, m4x4f32 *p_m1) {
+inline m4x4f32 m4x4f32_mul_m4x4f32(const m4x4f32 *p_m0, const m4x4f32 *p_m1) {
 	m4x4f32 transpose_m1 = m4x4f32_transpose(p_m1);
 	m4x4f32 result = {
 		v4f32_dot(p_m0->r0, transpose_m1.r0), v4f32_dot(p_m0->r0, transpose_m1.r1),  v4f32_dot(p_m0->r0, transpose_m1.r2),  v4f32_dot(p_m0->r0, transpose_m1.r3),
@@ -117,6 +123,21 @@ inline m4x4f32 m4x4f32_mul_m4x4f32(m4x4f32 *p_m0, m4x4f32 *p_m1) {
 		v4f32_dot(p_m0->r2, transpose_m1.r0), v4f32_dot(p_m0->r2, transpose_m1.r1),  v4f32_dot(p_m0->r2, transpose_m1.r2),  v4f32_dot(p_m0->r2, transpose_m1.r3),
 		v4f32_dot(p_m0->r3, transpose_m1.r0), v4f32_dot(p_m0->r3, transpose_m1.r1),  v4f32_dot(p_m0->r3, transpose_m1.r2),  v4f32_dot(p_m0->r3, transpose_m1.r3),
 	};
+	return result;
+}
+
+inline v3f32 v3f32_add_v3f32(v3f32 v0, v3f32 v1) {
+	v3f32 result = { v0.x + v1.x, v0.y + v1.y, v0.z + v1.z };
+	return result;
+}
+
+inline v3f32 v3f32_subtract_v3f32(v3f32 v0, v3f32 v1) {
+	v3f32 result = { v0.x - v1.x, v0.y - v1.y, v0.z - v1.z };
+	return result;
+}
+
+inline v3f32 v3f32_mul_f32(v3f32 v, f32 c) {
+	v3f32 result = { v.x * c, v.y * c, v.z * c };
 	return result;
 }
 
@@ -135,7 +156,7 @@ inline v4f32 v4f32_mul_f32(v4f32 v, f32 c) {
 	return result;
 }
 
-inline f32 determinant(const m4x4f32* M)
+inline f32 m4x4f32_determinant(const m4x4f32* M)
 {
 	f32 value;
 	value =
@@ -148,9 +169,9 @@ inline f32 determinant(const m4x4f32* M)
 	return value;
 }
 
-inline m4x4f32 inverse(const m4x4f32* M)
+inline m4x4f32 m4x4f32_inverse(const m4x4f32* M)
 {
-	f32 det = determinant(M);
+	f32 det = m4x4f32_determinant(M);
 	assert(det != 0.0);
 	f32 scale = 1.0 / det;
 
