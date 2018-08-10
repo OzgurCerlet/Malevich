@@ -195,3 +195,16 @@ inline m4x4f32 m4x4f32_inverse(const m4x4f32* M)
 
 	return inverse;
 }
+
+inline u32 encode_color_as_u32(v3f32 color) {
+	return (((u32)(color.x*255.f)) << 16) + (((u32)(color.y*255.f)) << 8) + (((u32)(color.z*255.f)));
+}
+
+inline v4f32 decode_u32_as_color(u32 encoded_color) {
+	v4f32 result;
+	result.w = ((encoded_color & 0xFF'00'00'00) >> 24) / 255.0f;
+	result.z = ((encoded_color & 0x00'FF'00'00) >> 16) / 255.0f;
+	result.y = ((encoded_color & 0x00'00'FF'00) >> 8)/ 255.0f;
+	result.x = (encoded_color & 0x00'00'00'FF) / 255.0f;
+	return result;
+}

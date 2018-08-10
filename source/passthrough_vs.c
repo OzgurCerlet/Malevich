@@ -1,9 +1,4 @@
-#include "math.h"
 #include "common_shader.h"
-
-typedef v2f32 float2;
-typedef v3f32 float3;
-typedef v4f32 float4;
 	
 struct Vs_Input {
 	float4 POSITION;

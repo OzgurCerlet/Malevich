@@ -1,11 +1,4 @@
-#include "math.h"
 #include "common_shader.h"
-
-typedef v2f32 float2;
-typedef v3f32 float3;
-typedef v4f32 float4;
-typedef uint32_t uint;
-typedef m4x4f32 float4x4;
 
 typedef struct Vs_Input {
 	float3 POSITION;
@@ -16,14 +9,9 @@ typedef struct Vs_Input {
 typedef struct Vs_Output {
 	float4 SV_POSITION;
 	float3 COLOR;
-	float  _pad;
+	float2 UV;
+	float _pad[3];
 }Vs_Output;
-
-struct Transform_Vertex_Shader {
-	uint32_t size_of_input_vertex;
-	uint32_t size_of_output_vertex;
-	void(*vs_main)(const void *p_vertex_input_data, void *p_vertex_output_data, const void **pp_contant_buffers, u32 vertex_id);
-};
 
 struct ConstantBuffer {
 	float4x4 clip_from_world;
@@ -42,6 +30,7 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 
 	p_out->SV_POSITION = pos_cs;
 	p_out->COLOR = (float3) { p_in->NORMAL.x, p_in->NORMAL.y, p_in->NORMAL.z };
+	p_out->UV = (float2) { p_in->UV.x, p_in->UV.y };
 }
 
 VertexShader transform_vs = { sizeof(Vs_Input), sizeof(Vs_Output), vs_main };

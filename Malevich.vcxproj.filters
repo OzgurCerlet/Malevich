@@ -46,5 +46,11 @@
     <ClInclude Include="source\math.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="source\external\octarine\octarine_image.h">
+      <Filter>Source Files\external\octarine</Filter>
+    </ClInclude>
+    <ClInclude Include="source\external\octarine\octarine_mesh.h">
+      <Filter>Source Files\external\octarine</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

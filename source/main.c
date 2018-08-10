@@ -11,8 +11,11 @@
 #include "common_shader.h"
 #include "external/Remotery/Remotery.h"
 #include "external/octarine/octarine_mesh.h"
+typedef int DXGI_FORMAT;
+#include "external/octarine/octarine_image.h"
 
 #pragma comment(lib, "octarine_mesh.lib")
+#pragma comment(lib, "octarine_image.lib")
 
 #define WIDTH 512 //820;
 #define HEIGHT 512 //1000;
@@ -25,6 +28,8 @@ f32 depth_buffer[WIDTH][HEIGHT];
 
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
 #define PIXEL_SHADER_INPUT_REGISTER_COUNT 32
+#define COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT 16
+#define COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT 128
 
 extern VertexShader transform_vs;
 extern VertexShader passthrough_vs;
@@ -57,7 +62,7 @@ typedef struct IA {
 typedef struct VS {
 	void (*shader)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, u32 vertex_id);
 	u8 output_register_count;
-	void *p_constant_buffers[16];
+	void *p_constant_buffers[COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT];
 } VS;
 
 typedef struct Viewport {
@@ -74,7 +79,8 @@ typedef struct RS {
 } RS;
 
 typedef struct PS {
-	void(*shader)(void *p_pixel_input_data, void *p_pixel_output_data);
+	void(*shader)(void *p_pixel_input_data, void *p_pixel_output_data, const void *p_shader_resource_views);
+	void *p_shader_resource_views[COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT];
 } PS;
 
 typedef struct OM {
@@ -107,6 +113,7 @@ typedef struct EdgeFunction{
 typedef struct Setup {
 	EdgeFunction a_edge_functions[3];
 	i32 a_signed_distances[3];
+	f32 a_reciprocal_ws[3];
 	f32 one_over_area;
 }Setup;
 
@@ -121,6 +128,7 @@ typedef struct Fragment {
 	v4f32 *p_attributes;
 	v2i32 coordinates;
 	v2f32 barycentric_coords;
+	v2f32 perspective_barycentric_coords;
 } Fragment;
 
 typedef struct PerFrameCB {
@@ -151,6 +159,7 @@ typedef struct Input {
 } Input;
 
 Mesh test_mesh;
+Texture2D test_tex;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
@@ -234,10 +243,6 @@ void error_win32(const char* func_name, DWORD last_error) {
 	LocalFree(error_msg);
 }
 
-inline u32 encode_color_as_u32(v3f32 color) {
-	return (((i32)(color.x*255.99f)) << 16) + (((i32)(color.y*255.99f)) << 8) + (((i32)(color.z*255.99f)));
-}
-
 inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32 y0, i32 x1, i32 y1) {
 	i32 a = y0 - y1;
 	i32 b = x1 - x0;
@@ -274,12 +279,24 @@ inline bool is_inside_triangle(Setup *p_setup, v2i32 frag_coord) {
 }
 
 // In this context, barycentric coords (u,v,w) = areal coordinates (A1/A,A2/A,A0/A) => u+v+w = 1;
-inline v2f32 compute_barycentric_coords(Setup *p_setup) {
+inline v2f32 compute_barycentric_coords(const Setup *p_setup) {
 	v2f32 barycentric_coords;
 	barycentric_coords.x = (float)(p_setup->a_signed_distances[1] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
 	barycentric_coords.y = (float)(p_setup->a_signed_distances[2] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
 
 	return barycentric_coords;
+}
+
+inline v2f32 compute_perspective_barycentric_coords(const Setup *p_setup, v2f32 barycentric_coordinates) {
+	v2f32 perspective_barycentric_coords;
+	float u_bary = barycentric_coordinates.x;
+	float v_bary = barycentric_coordinates.y;
+
+	float denom = (1.0 - u_bary - v_bary) * p_setup->a_reciprocal_ws[0] + u_bary * p_setup->a_reciprocal_ws[1] + v_bary * p_setup->a_reciprocal_ws[2];
+	perspective_barycentric_coords.x = u_bary * p_setup->a_reciprocal_ws[1] / denom;
+	perspective_barycentric_coords.y = v_bary * p_setup->a_reciprocal_ws[2] / denom;
+
+	return perspective_barycentric_coords;
 }
 
 inline v4f32 interpolate_attribute(const v4f32 *p_attributes, v2f32 barycentric_coords, u8 num_attributes_per_vertex) {
@@ -399,24 +416,24 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 		// ASSUMPTION(cerlet): No need for clipping!
 
 		// projection : Clip Space --> NDC Space
-		f32 perspective_factor;
-		perspective_factor = 1.0 / a_vertex_positions[0].w;
-		a_vertex_positions[0].x *= perspective_factor;
-		a_vertex_positions[0].y *= perspective_factor;
-		a_vertex_positions[0].z *= perspective_factor;
-		a_vertex_positions[0].w *= perspective_factor;
+		f32 a_reciprocal_ws[3];
+		a_reciprocal_ws[0] = 1.0 / a_vertex_positions[0].w;
+		a_vertex_positions[0].x *= a_reciprocal_ws[0];
+		a_vertex_positions[0].y *= a_reciprocal_ws[0];
+		a_vertex_positions[0].z *= a_reciprocal_ws[0];
+		a_vertex_positions[0].w *= a_reciprocal_ws[0];
 
-		perspective_factor = 1.0 / a_vertex_positions[1].w;
-		a_vertex_positions[1].x *= perspective_factor;
-		a_vertex_positions[1].y *= perspective_factor;
-		a_vertex_positions[1].z *= perspective_factor;
-		a_vertex_positions[1].w *= perspective_factor;
+		a_reciprocal_ws[1] = 1.0 / a_vertex_positions[1].w;
+		a_vertex_positions[1].x *= a_reciprocal_ws[1];
+		a_vertex_positions[1].y *= a_reciprocal_ws[1];
+		a_vertex_positions[1].z *= a_reciprocal_ws[1];
+		a_vertex_positions[1].w *= a_reciprocal_ws[1];
 
-		perspective_factor = 1.0 / a_vertex_positions[2].w;
-		a_vertex_positions[2].x *= perspective_factor;
-		a_vertex_positions[2].y *= perspective_factor;
-		a_vertex_positions[2].z *= perspective_factor;
-		a_vertex_positions[2].w *= perspective_factor;
+		a_reciprocal_ws[2] = 1.0 / a_vertex_positions[2].w;
+		a_vertex_positions[2].x *= a_reciprocal_ws[2];
+		a_vertex_positions[2].y *= a_reciprocal_ws[2];
+		a_vertex_positions[2].z *= a_reciprocal_ws[2];
+		a_vertex_positions[2].w *= a_reciprocal_ws[2];
 
 		// viewport transformation : NDC Space --> Screen Space
 		Viewport viewport = graphics_pipeline.rs.viewport;
@@ -450,13 +467,17 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 		signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]); // TODO(cerlet): Implement face culling!
 		if(signed_area == 0) { continue; }; // degenerate triangle 
 
-		if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+		// face culling with winding order
+		//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
 		Setup setup;
 		set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
 		set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
 		set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 		setup.one_over_area = fabs(1.f / (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)));
+		setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
+		setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
+		setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
 
 		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3)) = a_vertex_positions[0];
 		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset)) = a_vertex_positions[1];
@@ -516,10 +537,13 @@ void run_rasterizer( u32 max_possible_fragment_count, u32 assembled_triangle_cou
 					}
 					graphics_pipeline.om.p_depth[y*(i32)graphics_pipeline.rs.viewport.width + x] = fragment_z;
 
+					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
+
 					Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
 					p_fragment->coordinates = frag_coords;
 					p_fragment->p_attributes = p_attributes;
 					p_fragment->barycentric_coords = barycentric_coords;
+					p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
 				}
 			}
 		}
@@ -535,12 +559,12 @@ void run_pixel_shader_stage(const Fragment* p_fragments, u32 num_fragments) {
 		Fragment *p_fragment = p_fragments + frag_index;
 		v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
 		for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-			a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, p_fragment->barycentric_coords, num_attibutes);
+			a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, p_fragment->perspective_barycentric_coords, num_attibutes);
 		}
 
 		// Pixel Shader
 		v4f32 fragment_out_color;
-		graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color);
+		graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
 		// Output Merger
 		graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
 	}
@@ -619,6 +643,7 @@ void render() {
 	graphics_pipeline.rs.viewport = viewport;
 
 	graphics_pipeline.ps.shader = passthrough_ps.ps_main;
+	graphics_pipeline.ps.p_shader_resource_views[0] = &test_tex;
 
 	graphics_pipeline.om.p_colors = &frame_buffer[0][0];
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
@@ -640,7 +665,7 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/suzanne.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(true); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -651,11 +676,22 @@ void init() {
 		test_mesh.p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
 	}
 
+	{ // Load texture
+
+		OctarineImageHeader header;
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &test_tex.p_data);
+		if(result != OCTARINE_IMAGE_OK) { assert(true); };
+
+		test_tex.width = header.width;
+		test_tex.height = header.height;
+
+	}
+
 	{ // Init Camera
-		camera.pos = (v3f32){ 2.0f, 0.0f, 0.0f};
+		camera.pos = (v3f32){ 0.0f, 0.0f, 1.0f};
 		camera.yaw_rad = 0.0;
-		camera.pitch_rad = 0.0;
-		camera.fov_y_angle_deg = 60.f;
+		camera.pitch_rad = 90.0;
+		camera.fov_y_angle_deg = 90.f;
 		camera.near_plane = 0.1;
 		camera.far_plane = 1000.1;
 

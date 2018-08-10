@@ -42,6 +42,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\common_shader.h" />
+    <ClInclude Include="source\external\octarine\octarine_image.h" />
+    <ClInclude Include="source\external\octarine\octarine_mesh.h" />
     <ClInclude Include="source\math.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
