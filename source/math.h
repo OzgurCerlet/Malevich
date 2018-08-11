@@ -156,6 +156,15 @@ inline v4f32 v4f32_mul_f32(v4f32 v, f32 c) {
 	return result;
 }
 
+inline f32 v4f32_length(v4f32 v) {
+	return sqrt(v4f32_dot(v, v));
+}
+
+inline v4f32 v4f32_normalize(v4f32 v) {
+	f32 one_over_length =  1.0 / v4f32_length(v);
+	return v4f32_mul_f32(v, one_over_length);
+}
+
 inline f32 m4x4f32_determinant(const m4x4f32* M)
 {
 	f32 value;

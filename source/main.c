@@ -382,19 +382,80 @@ void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data,
 	rmt_EndCPUSample();
 }
 
-void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, u32 *p_max_possible_fragment_count, Triangle **pp_triangles) {
+#define  MAX_NUM_CLIP_VERTICES 16
+typedef struct Vertex {
+	u32 offset;
+}Vertex;
+
+void clip_by_plane(v4f32 *p_atrributes, Vertex* p_clipped_vertices, v4f32 plane_normal, f32 plane_d, u32 *p_num_vertices ) {
+
+	u32 outVerts = 0;
+	u32 num_vertices = *p_num_vertices;
+	static u32 num_generated_clipped_vertices = 0;
+
+	v4f32 v0_pos = 
+	f32 current_dot = v4f32_dot(plane_normal, vertPointers[0]->mAttributes[ATTRIBUTE_POSITION]);
+	bool is_current_front = current_dot > -plane_d;
+
+	for(int i = 0; i < num_vertices; i++) {
+		assert(outVerts < MAX_NUM_CLIP_VERTICES);
+
+		int next = (i + 1) % num_vertices;
+		if(is_current_front)
+			resultPointers[outVerts++] = vertPointers[i];
+
+		float next_dot = v4f32_dot(plane_normal, vertPointers[next]->mAttributes[ATTRIBUTE_POSITION]);
+		bool is_next_front = next_dot > -plane_d;
+		if(is_current_front != is_next_front) {
+			assert(num_generated_clipped_vertices < MAX_NUM_CLIP_VERTICES);
+			float t = (plane_d + current_dot) / (current_dot - next_dot);
+			for(int u = 0; u < MAX_VERTEX_ATTRIBS; u++)
+				mGenClipVerts[num_generated_clipped_vertices].mAttributes[u] = vertPointers[i]->mAttributes[u] * (1 - t) + vertPointers[next]->mAttributes[u] * t;
+
+			resultPointers[outVerts++] = &mGenClipVerts[num_generated_clipped_vertices++];
+		}
+
+		thisDp = nextDp;
+		is_current_front = is_next_front;
+	}
+
+	nVerts = outVerts;
+	v4f32 *p_resultPointers[MAX_NUM_CLIP_VERTICES];
+	memcpy(vertPointers, resultPointers, sizeof(cVertex*)*nVerts);
+	*p_num_vertices = num_vertices;
+}
+
+void run_clipper(v4f32 *p_attributes, const void *p_vertex_output_data, u32 in_triangle_index, u32 out_triangle_index, u32 *num_extra_triangles) {
+	Vertex a_clipped_vertices[MAX_NUM_CLIP_VERTICES];
+	u32 num_vertices = 3;
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, &num_vertices);	// -wc <= xc <==> 0 <= xc + wc
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, &num_vertices);	// xc <= wc <==> 0 <= wc - xc
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) { 0, 1, 0, 1 }), 0, &num_vertices);	// -wc <= yc <==> 0 <= yc + wc
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) { 0,-1, 0, 1 }), 0, &num_vertices);	// yc <= wc <==> 0 <= wc - yc
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, &num_vertices);	// -wc <= zc <==> 0 <= zc + wc
+	clip_by_plane(p_attributes, a_clipped_vertices, v4f32_normalize((v4f32) { 0, 0,-1, 1 }), 0, &num_vertices);	// zc <= wc <==> 0 <= wc - zc
+}
+
+void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, u32 *p_max_possible_fragment_count, Triangle **pp_triangles) {
 	rmt_BeginCPUSample(primitive_assembly_stage, 0);
 	// Primitive Assembly
-	*pp_triangles = malloc(sizeof(Triangle) *triangle_count);
-	u32 assembled_triangle_count = 0;
+	const u32 max_clipper_generated_triangle_count = in_triangle_count / 10;
+	const u32 out_triangle_count = in_triangle_count + max_clipper_generated_triangle_count;
+	const u32 per_vertex_offset = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
+	const u32 triangle_data_size = per_vertex_offset * 3;
+	
+	*pp_triangles = malloc(sizeof(Triangle) * out_triangle_count);
+	v4f32 *p_attributes = malloc(triangle_data_size * out_triangle_count);
+	
 	u32 max_possible_fragment_count = 0;
-	u32 per_vertex_offset = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
-	for(u32 triangle_index = 0; triangle_index < triangle_count; ++triangle_index) {
+	u32 out_triangle_index = 0;
+
+	for(u32 in_triangle_index = 0; in_triangle_index < in_triangle_count; ++in_triangle_index) {
 
 		v4f32 a_vertex_positions[3];
-		a_vertex_positions[0] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3));
-		a_vertex_positions[1] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset));
-		a_vertex_positions[2] = *((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset * 2));
+		a_vertex_positions[0] = *((v4f32*)((u8*)p_vertex_output_data + in_triangle_index * triangle_data_size));
+		a_vertex_positions[1] = *((v4f32*)((u8*)p_vertex_output_data + in_triangle_index * triangle_data_size + per_vertex_offset));
+		a_vertex_positions[2] = *((v4f32*)((u8*)p_vertex_output_data + in_triangle_index * triangle_data_size + per_vertex_offset * 2));
 
 		// viewport culling
 		if(a_vertex_positions[0].w == 0 || a_vertex_positions[1].w == 0 || a_vertex_positions[2].w == 0) {
@@ -402,7 +463,8 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 		}
 
 		// clip space culling
-		if((a_vertex_positions[0].x < -a_vertex_positions[0].w && a_vertex_positions[1].x < -a_vertex_positions[1].w && a_vertex_positions[2].x < -a_vertex_positions[2].w) ||
+		if(
+			(a_vertex_positions[0].x < -a_vertex_positions[0].w && a_vertex_positions[1].x < -a_vertex_positions[1].w && a_vertex_positions[2].x < -a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].x > +a_vertex_positions[0].w && a_vertex_positions[1].x > +a_vertex_positions[1].w && a_vertex_positions[2].x > +a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].y < -a_vertex_positions[0].w && a_vertex_positions[1].y < -a_vertex_positions[1].w && a_vertex_positions[2].y < -a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].y > +a_vertex_positions[0].w && a_vertex_positions[1].y > +a_vertex_positions[1].w && a_vertex_positions[2].y > +a_vertex_positions[2].w) ||
@@ -412,100 +474,107 @@ void run_primitive_assembly_stage(u32 triangle_count, void* p_vertex_output_data
 		}
 
 		// clipping
-		// TODO(cerlet): Implement Clipping
-		// ASSUMPTION(cerlet): No need for clipping!
+		i32 num_extra_triangles = 0;
+		run_clipper(p_attributes, p_vertex_output_data, in_triangle_index, out_triangle_index, &num_extra_triangles);
+		a_vertex_positions[0] = *(p_attributes + out_triangle_index * triangle_data_size);
+		a_vertex_positions[1] = *(p_attributes + out_triangle_index * triangle_data_size + per_vertex_offset);
+		a_vertex_positions[2] = *(p_attributes + out_triangle_index * triangle_data_size + per_vertex_offset * 2);
+		
+		do {
+			// projection : Clip Space --> NDC Space
+			f32 a_reciprocal_ws[3];
+			a_reciprocal_ws[0] = 1.0 / a_vertex_positions[0].w;
+			a_vertex_positions[0].x *= a_reciprocal_ws[0];
+			a_vertex_positions[0].y *= a_reciprocal_ws[0];
+			a_vertex_positions[0].z *= a_reciprocal_ws[0];
+			a_vertex_positions[0].w *= a_reciprocal_ws[0];
 
-		// projection : Clip Space --> NDC Space
-		f32 a_reciprocal_ws[3];
-		a_reciprocal_ws[0] = 1.0 / a_vertex_positions[0].w;
-		a_vertex_positions[0].x *= a_reciprocal_ws[0];
-		a_vertex_positions[0].y *= a_reciprocal_ws[0];
-		a_vertex_positions[0].z *= a_reciprocal_ws[0];
-		a_vertex_positions[0].w *= a_reciprocal_ws[0];
+			a_reciprocal_ws[1] = 1.0 / a_vertex_positions[1].w;
+			a_vertex_positions[1].x *= a_reciprocal_ws[1];
+			a_vertex_positions[1].y *= a_reciprocal_ws[1];
+			a_vertex_positions[1].z *= a_reciprocal_ws[1];
+			a_vertex_positions[1].w *= a_reciprocal_ws[1];
 
-		a_reciprocal_ws[1] = 1.0 / a_vertex_positions[1].w;
-		a_vertex_positions[1].x *= a_reciprocal_ws[1];
-		a_vertex_positions[1].y *= a_reciprocal_ws[1];
-		a_vertex_positions[1].z *= a_reciprocal_ws[1];
-		a_vertex_positions[1].w *= a_reciprocal_ws[1];
+			a_reciprocal_ws[2] = 1.0 / a_vertex_positions[2].w;
+			a_vertex_positions[2].x *= a_reciprocal_ws[2];
+			a_vertex_positions[2].y *= a_reciprocal_ws[2];
+			a_vertex_positions[2].z *= a_reciprocal_ws[2];
+			a_vertex_positions[2].w *= a_reciprocal_ws[2];
 
-		a_reciprocal_ws[2] = 1.0 / a_vertex_positions[2].w;
-		a_vertex_positions[2].x *= a_reciprocal_ws[2];
-		a_vertex_positions[2].y *= a_reciprocal_ws[2];
-		a_vertex_positions[2].z *= a_reciprocal_ws[2];
-		a_vertex_positions[2].w *= a_reciprocal_ws[2];
+			// viewport transformation : NDC Space --> Screen Space
+			Viewport viewport = graphics_pipeline.rs.viewport;
+			v4f32 vertex_pos_ss;
+			m4x4f32 screen_from_ndc = {
+				viewport.width*0.5, 0, 0, viewport.width*0.5 + viewport.top_left_x,
+				0, -viewport.height*0.5, 0, viewport.height*0.5 + viewport.top_left_y,
+				0, 0, viewport.max_depth - viewport.min_depth, viewport.min_depth,
+				0,	0,	0,	1
+			};
 
-		// viewport transformation : NDC Space --> Screen Space
-		Viewport viewport = graphics_pipeline.rs.viewport;
-		v4f32 vertex_pos_ss;
-		m4x4f32 screen_from_ndc = {
-			viewport.width*0.5, 0, 0, viewport.width*0.5 + viewport.top_left_x,
-			0, -viewport.height*0.5, 0, viewport.height*0.5 + viewport.top_left_y,
-			0, 0, viewport.max_depth - viewport.min_depth, viewport.min_depth,
-			0,	0,	0,	1
-		};
+			vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[0]);
+			a_vertex_positions[0] = vertex_pos_ss;
 
-		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[0]);
-		a_vertex_positions[0] = vertex_pos_ss;
+			vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[1]);
+			a_vertex_positions[1] = vertex_pos_ss;
 
-		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[1]);
-		a_vertex_positions[1] = vertex_pos_ss;
+			vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[2]);
+			a_vertex_positions[2] = vertex_pos_ss;
 
-		vertex_pos_ss = m4x4f32_mul_v4f32(&screen_from_ndc, a_vertex_positions[2]);
-		a_vertex_positions[2] = vertex_pos_ss;
+			// convert ss positions to fixed-point representation and snap
+			i32 x[3], y[3], signed_area;
+			x[0] = floor(a_vertex_positions[0].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			x[1] = floor(a_vertex_positions[1].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			x[2] = floor(a_vertex_positions[2].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			y[0] = floor(a_vertex_positions[0].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			y[1] = floor(a_vertex_positions[1].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			y[2] = floor(a_vertex_positions[2].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
 
-		// convert ss positions to fixed-point representation and snap
-		i32 x[3], y[3], signed_area;
-		x[0] = floor(a_vertex_positions[0].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
-		x[1] = floor(a_vertex_positions[1].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
-		x[2] = floor(a_vertex_positions[2].x * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
-		y[0] = floor(a_vertex_positions[0].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
-		y[1] = floor(a_vertex_positions[1].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
-		y[2] = floor(a_vertex_positions[2].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
+			// triangle setup
+			signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]); // TODO(cerlet): Implement face culling!
+			if(signed_area == 0) { continue; }; // degenerate triangle 
+			if(signed_area < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
 
-		// triangle setup
-		signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]); // TODO(cerlet): Implement face culling!
-		if(signed_area == 0) { continue; }; // degenerate triangle 
+			// face culling with winding order
+			//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
-		// face culling with winding order
-		//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+			Setup setup;
+			set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
+			set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
+			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
+			setup.one_over_area = fabs(1.f / (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)));
+			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
+			setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
+			setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
 
-		Setup setup;
-		set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
-		set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
-		set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
-		setup.one_over_area = fabs(1.f / (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)));
-		setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
-		setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
-		setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
+			*(p_attributes + out_triangle_index * triangle_data_size) = a_vertex_positions[0];
+			*(p_attributes + out_triangle_index * triangle_data_size + per_vertex_offset) = a_vertex_positions[1];
+			*(p_attributes + out_triangle_index * triangle_data_size + per_vertex_offset * 2) = a_vertex_positions[2];
 
-		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3)) = a_vertex_positions[0];
-		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset)) = a_vertex_positions[1];
-		*((v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3 + per_vertex_offset * 2)) = a_vertex_positions[2];
+			Triangle *p_current_triangle = (*pp_triangles) + out_triangle_index;
+			p_current_triangle->setup = setup;
 
-		Triangle *p_current_triangle = (*pp_triangles) + assembled_triangle_count++;
-		p_current_triangle->setup = setup;
+			v2i32 min_bounds;
+			v2i32 max_bounds;
+			min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
+			min_bounds.y = MAX(min_bounds.y, 0);
+			// max corner
+			max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
+			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
+			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
 
-		v2i32 min_bounds;
-		v2i32 max_bounds;
-		min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-		min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-		min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
-		min_bounds.y = MAX(min_bounds.y, 0);
-		// max corner
-		max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-		max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-		max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
-		max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
+			max_possible_fragment_count += ((max_bounds.x - min_bounds.x + 1) * (max_bounds.y - min_bounds.y + 1));
+			p_current_triangle->min_bounds = min_bounds;
+			p_current_triangle->max_bounds = max_bounds;
 
-		max_possible_fragment_count += ((max_bounds.x - min_bounds.x + 1 ) * (max_bounds.y - min_bounds.y + 1));
-		p_current_triangle->min_bounds = min_bounds;
-		p_current_triangle->max_bounds = max_bounds;
+			p_current_triangle->p_attributes = p_attributes + out_triangle_index++;
 
-		p_current_triangle->p_attributes = (v4f32*)((u8*)p_vertex_output_data + triangle_index * per_vertex_offset * 3);
+		} while(num_extra_triangles-- > 0);
 	}
 
-	*p_assembled_triangle_count = assembled_triangle_count;
+	*p_assembled_triangle_count = out_triangle_index;
 	*p_max_possible_fragment_count = max_possible_fragment_count;
 	rmt_EndCPUSample();
 }
@@ -665,8 +734,9 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
+		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
 		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
-		if(result != OCTARINE_MESH_OK) { assert(true); };
+		if(result != OCTARINE_MESH_OK) { assert(false); };
 
 		u32 vertex_size = sizeof(float) * 8;
 		u32 vertex_buffer_size = test_mesh.header.vertex_count * vertex_size;
@@ -679,8 +749,9 @@ void init() {
 	{ // Load texture
 
 		OctarineImageHeader header;
+		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &test_tex.p_data);
 		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &test_tex.p_data);
-		if(result != OCTARINE_IMAGE_OK) { assert(true); };
+		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		test_tex.width = header.width;
 		test_tex.height = header.height;
@@ -688,9 +759,9 @@ void init() {
 	}
 
 	{ // Init Camera
-		camera.pos = (v3f32){ 0.0f, 0.0f, 1.0f};
-		camera.yaw_rad = 0.0;
-		camera.pitch_rad = 90.0;
+		camera.pos = (v3f32){ 3.5f, 1.0f, 1.0f};
+		camera.yaw_rad = TO_RADIANS(-30.0);
+		camera.pitch_rad = TO_RADIANS(0.0);
 		camera.fov_y_angle_deg = 90.f;
 		camera.near_plane = 0.1;
 		camera.far_plane = 1000.1;
