@@ -387,7 +387,7 @@ typedef struct Vertex {
 	v4f32 a_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
 }Vertex;
 
-void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, u32 *p_num_vertices ) {
+void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, i32 *p_num_vertices ) {
 
 	u32 num_out_vertices = 0;
 	u32 num_vertices = *p_num_vertices;
@@ -403,19 +403,20 @@ void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, 
 
 		int next = (i + 1) % num_vertices;
 		if(is_current_inside) {
-			a_result_vertices[num_out_vertices++] = (p_clipped_vertices)[i];
+			a_result_vertices[num_out_vertices++] = p_clipped_vertices[i];
 		}
 
-		float next_dot = v4f32_dot(plane_normal, (p_clipped_vertices)[next].a_attributes[0]);
+		float next_dot = v4f32_dot(plane_normal, p_clipped_vertices[next].a_attributes[0]);
 		bool is_next_inside = next_dot > -plane_d;
 		if(is_current_inside != is_next_inside) {
 			assert(num_generated_clipped_vertices < MAX_NUM_CLIP_VERTICES);
 			f32 t = (plane_d + current_dot) / (current_dot - next_dot);
 			for(u32 attribute_index = 0; attribute_index < num_attributes; ++attribute_index) {
-				a_result_vertices[num_out_vertices++].a_attributes[attribute_index] = v4f32_add_v4f32(
-					v4f32_mul_f32((p_clipped_vertices)[i].a_attributes[attribute_index], (1.f - t)),
-					v4f32_mul_f32((p_clipped_vertices)[next].a_attributes[attribute_index], t));
+				a_result_vertices[num_out_vertices].a_attributes[attribute_index] = v4f32_add_v4f32(
+					v4f32_mul_f32(p_clipped_vertices[i].a_attributes[attribute_index], (1.f - t)),
+					v4f32_mul_f32(p_clipped_vertices[next].a_attributes[attribute_index], t));
 			}
+			num_out_vertices++;
 		}
 
 		current_dot = next_dot;
@@ -427,28 +428,28 @@ void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, 
 	memcpy(p_clipped_vertices, a_result_vertices, sizeof(Vertex)*num_out_vertices);
 }
 
-void run_clipper(Vertex *p_clipped_vertices, const void *p_vertex_output_data, u32 in_triangle_index, u32 *p_num_clipped_vertices) {
+void run_clipper(Vertex *p_clipped_vertices, const void *p_vertex_output_data, u32 in_triangle_index, i32 *p_num_clipped_vertices) {
 	u32 num_attributes = graphics_pipeline.vs.output_register_count;
 	u32 vertex_size = num_attributes * sizeof(v4f32);
 	
 	// initialize clipped vertices array with original vertex data
-	memcpy(p_clipped_vertices, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes, vertex_size);
-	memcpy(p_clipped_vertices + 1, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes + num_attributes, vertex_size);
-	memcpy(p_clipped_vertices + 2, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes + num_attributes * 2, vertex_size);
+	memcpy(p_clipped_vertices, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3, vertex_size);
+	memcpy(p_clipped_vertices + 1, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes, vertex_size);
+	memcpy(p_clipped_vertices + 2, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes * 2, vertex_size);
 	*p_num_clipped_vertices = 3;
 
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 1, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= y <==> 0 <= y + w
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0,-1, 0, 1 }), 0, p_num_clipped_vertices);	//  y <= w <==> 0 <= w - y
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, p_num_clipped_vertices);	// -w <= z <==> 0 <= z + w
-	//clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0,-1, 1 }), 0, p_num_clipped_vertices);	//  z <= w <==> 0 <= w - z
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 1, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= y <==> 0 <= y + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0,-1, 0, 1 }), 0, p_num_clipped_vertices);	//  y <= w <==> 0 <= w - y
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, p_num_clipped_vertices);	// -w <= z <==> 0 <= z + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0,-1, 1 }), 0, p_num_clipped_vertices);	//  z <= w <==> 0 <= w - z
 }
 
 void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, u32 *p_max_possible_fragment_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
 	rmt_BeginCPUSample(primitive_assembly_stage, 0);
 	// Primitive Assembly
-	const u32 max_clipper_generated_triangle_count = in_triangle_count / 10;
+	const u32 max_clipper_generated_triangle_count = max(in_triangle_count * 2, 512);
 	const u32 out_triangle_count = in_triangle_count + max_clipper_generated_triangle_count;
 	const u32 num_attributes = graphics_pipeline.vs.output_register_count;
 	const u32 per_vertex_offset = num_attributes * sizeof(v4f32);
@@ -479,17 +480,17 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			(a_vertex_positions[0].y < -a_vertex_positions[0].w && a_vertex_positions[1].y < -a_vertex_positions[1].w && a_vertex_positions[2].y < -a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].y > +a_vertex_positions[0].w && a_vertex_positions[1].y > +a_vertex_positions[1].w && a_vertex_positions[2].y > +a_vertex_positions[2].w) ||
 			(a_vertex_positions[0].z < 0.f						&& a_vertex_positions[1].z < 0.f					  && a_vertex_positions[2].z < 0.f) ||
-			(a_vertex_positions[0].z > +a_vertex_positions[1].w	&& a_vertex_positions[1].z > +a_vertex_positions[1].w && a_vertex_positions[2].z > +a_vertex_positions[2].w)) {
+			(a_vertex_positions[0].z > +a_vertex_positions[0].w	&& a_vertex_positions[1].z > +a_vertex_positions[1].w && a_vertex_positions[2].z > +a_vertex_positions[2].w)) {
 			continue;
 		}
 
 		// clipping
 		i32 num_extra_triangles = 0;
 		Vertex a_clipped_vertices[MAX_NUM_CLIP_VERTICES];
-		u32 clipped_vertex_count = 0;
+		i32 clipped_vertex_count = 0;
 		run_clipper(&a_clipped_vertices, p_vertex_output_data, in_triangle_index, &clipped_vertex_count);
 
-		for(u32 clipped_vertex_index = 1; clipped_vertex_index < clipped_vertex_count - 1; ++clipped_vertex_index) {
+		for(i32 clipped_vertex_index = 1; clipped_vertex_index < clipped_vertex_count - 1; ++clipped_vertex_index) {
 			a_vertex_positions[0] = a_clipped_vertices[0].a_attributes[0];
 			a_vertex_positions[1] = a_clipped_vertices[clipped_vertex_index].a_attributes[0];
 			a_vertex_positions[2] = a_clipped_vertices[clipped_vertex_index + 1].a_attributes[0];
@@ -574,19 +575,21 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			v2i32 max_bounds;
 			min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			min_bounds.x = MAX(min_bounds.x, 0);							// prevent negative coords
-			min_bounds.y = MAX(min_bounds.y, 0);
+			min_bounds.x = MIN(MAX(min_bounds.x, 0), (i32)viewport.width - 1);							// prevent negative coords
+			min_bounds.y = MIN(MAX(min_bounds.y, 0), (i32)viewport.height - 1);
 			// max corner
 			max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			max_bounds.y = MAX3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
 			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
 
-			max_possible_fragment_count += ((max_bounds.x - min_bounds.x + 1) * (max_bounds.y - min_bounds.y + 1));
+			int current_bounds_size = ((max_bounds.x - min_bounds.x + 1) * (max_bounds.y - min_bounds.y + 1));
+			assert(current_bounds_size > 0);
+			max_possible_fragment_count += current_bounds_size;
 			p_current_triangle->min_bounds = min_bounds;
 			p_current_triangle->max_bounds = max_bounds;
 
-			p_current_triangle->p_attributes = (*pp_attributes) + out_triangle_index;
+			p_current_triangle->p_attributes = (*pp_attributes) + out_triangle_index * 3 * num_attributes;
 			out_triangle_index++;
 		}	
 	}
@@ -753,8 +756,8 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
+		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(false); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -768,8 +771,8 @@ void init() {
 	{ // Load texture
 
 		OctarineImageHeader header;
-		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &test_tex.p_data);
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &test_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &test_tex.p_data);
+		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &test_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		test_tex.width = header.width;
@@ -778,12 +781,18 @@ void init() {
 	}
 
 	{ // Init Camera
+#if 0
 		camera.pos = (v3f32){ 3.5f, 1.0f, 1.0f};
 		camera.yaw_rad = TO_RADIANS(-30.0);
 		camera.pitch_rad = TO_RADIANS(0.0);
+#else
+	  camera.pos = (v3f32){ 0.395f, 0.216f, 0.025f};
+	  camera.yaw_rad = -2.0;
+	  camera.pitch_rad = -0.4;
+#endif
 		camera.fov_y_angle_deg = 90.f;
-		camera.near_plane = 0.1;
-		camera.far_plane = 1000.1;
+		camera.near_plane = 0.01;
+		camera.far_plane = 100.01;
 
 		// clip from view transformation, view space : y - up, left-handed
 		float fov_y_angle_rad = TO_RADIANS(camera.fov_y_angle_deg);
@@ -910,6 +919,10 @@ void update() {
 	camera.view_from_world = m4x4f32_inverse(&world_from_view);
 
 	per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
+	
+	//char buf[1024];
+	//sprintf(buf,"pos: %f, %f, %f --  yaw: %f -- pitch: %f \n", camera.pos.x, camera.pos.y, camera.pos.z, camera.yaw_rad, camera.pitch_rad);
+	//OutputDebugString(buf);
 
 	rmt_EndCPUSample();
 }

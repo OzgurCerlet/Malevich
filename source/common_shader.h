@@ -24,12 +24,12 @@ typedef struct Texture2D {
 } Texture2D;
 
 inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
-	//tex_coord.x = tex_coord.x > 1.0 ? 1.0 : (tex_coord.x < 0.0 ? 0.0 : tex_coord.x);
-	//tex_coord.y = tex_coord.y > 1.0 ? 1.0 : (tex_coord.y < 0.0 ? 0.0 : tex_coord.y);
+	tex_coord.x = tex_coord.x > 1.0 ? 1.0 : (tex_coord.x < 0.0 ? 0.0 : tex_coord.x);
+	tex_coord.y = tex_coord.y > 1.0 ? 1.0 : (tex_coord.y < 0.0 ? 0.0 : tex_coord.y);
 
-	//int s = (int)(tex.width * tex_coord.x - 0.5);
-	//int t = (int)(tex.height * tex_coord.y - 0.5);
-	//uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
-	//return decode_u32_as_color(texel);
+	int s = (int)(tex.width * tex_coord.x - 0.5);
+	int t = (int)(tex.height * tex_coord.y - 0.5);
+	uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
+	return decode_u32_as_color(texel);
 	return (float4) { tex_coord.x, tex_coord.y, 1, 1 };
 }
