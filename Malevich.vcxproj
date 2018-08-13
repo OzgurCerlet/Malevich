@@ -42,6 +42,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\common_shader.h" />
+    <ClInclude Include="source\external\enkiTS\TaskScheduler_c.h" />
     <ClInclude Include="source\external\octarine\octarine_image.h" />
     <ClInclude Include="source\external\octarine\octarine_mesh.h" />
     <ClInclude Include="source\math.h" />

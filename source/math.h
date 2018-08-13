@@ -101,6 +101,11 @@ inline f32 v4f32_dot(v4f32 v0, v4f32 v1) {
 	return result;
 }
 
+inline f32 v3f32_dot(v3f32 v0, v3f32 v1) {
+	f32 result = v0.x * v1.x + v0.y * v1.y + v0.z * v1.z;
+	return result;
+}
+
 inline v4f32 m4x4f32_mul_v4f32(const m4x4f32 *p_m, v4f32 v) {
 	v4f32 result = { v4f32_dot(p_m->r0, v), v4f32_dot(p_m->r1, v), v4f32_dot(p_m->r2, v), v4f32_dot(p_m->r3, v) };
 	return result;
@@ -156,13 +161,27 @@ inline v4f32 v4f32_mul_f32(v4f32 v, f32 c) {
 	return result;
 }
 
+inline v4f32 v4f32_mul_v4f32(v4f32 v0, v4f32 v1) {
+	v4f32 result = { v0.x * v1.x, v0.y * v1.y, v0.z * v1.z, v0.w * v1.w };
+	return result;
+}
+
 inline f32 v4f32_length(v4f32 v) {
 	return sqrt(v4f32_dot(v, v));
+}
+
+inline f32 v3f32_length(v3f32 v) {
+	return sqrt(v3f32_dot(v, v));
 }
 
 inline v4f32 v4f32_normalize(v4f32 v) {
 	f32 one_over_length =  1.0 / v4f32_length(v);
 	return v4f32_mul_f32(v, one_over_length);
+}
+
+inline v3f32 v3f32_normalize(v3f32 v) {
+	f32 one_over_length = 1.0 / v3f32_length(v);
+	return v3f32_mul_f32(v, one_over_length);
 }
 
 inline f32 m4x4f32_determinant(const m4x4f32* M)

@@ -8,7 +8,7 @@ typedef struct Vs_Input {
 
 typedef struct Vs_Output {
 	float4 SV_POSITION;
-	float3 COLOR;
+	float3 NORMAL;
 	float2 UV;
 	float _pad[3];
 }Vs_Output;
@@ -29,7 +29,13 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	float4 pos_cs = m4x4f32_mul_v4f32(&p_cb->clip_from_world, pos_ws);
 
 	p_out->SV_POSITION = pos_cs;
-	p_out->COLOR = (float3) { p_in->NORMAL.x, p_in->NORMAL.y, p_in->NORMAL.z };
+	//if(vertex_id / 3) {
+	//	p_out->NORMAL = (float3) { 0, 1, 0 };
+	//}
+	//else {
+	//	p_out->NORMAL = (float3) { 1.0, 0.0, 0.0 };
+	//}
+	p_out->NORMAL = (float3) { p_in->NORMAL.x, p_in->NORMAL.y, p_in->NORMAL.z };
 	p_out->UV = (float2) { p_in->UV.x, p_in->UV.y };
 }
 

@@ -33,3 +33,24 @@ inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
 	return decode_u32_as_color(texel);
 	return (float4) { tex_coord.x, tex_coord.y, 1, 1 };
 }
+
+inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {
+	f32 cos_theta = v3f32_dot((float3) { 0, 0, 1 }, dir);
+	if(abs(cos_theta) == 1) return sample_2D(tex, (float2) { 0, 0 });
+	
+	f32 uv_y = acos(cos_theta)/PI;
+
+	f32 cos_x = v3f32_dot((float3) { 1, 0, 0 }, v3f32_normalize((float3) { dir.x, dir.y, 0.0 }));
+	f32 cos_y = v3f32_dot((float3) { 0, 1, 0 }, v3f32_normalize((float3) { dir.x, dir.y, 0.0 }));
+
+	f32 uv_x;
+	if(cos_y >= 0) {
+		uv_x = acos(cos_x) / PI;
+	}
+	else {
+		uv_x = 1.0 - acos(cos_x) / PI;
+	}
+
+	return sample_2D(tex, (float2) { uv_x, uv_y });
+
+}
