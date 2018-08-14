@@ -131,6 +131,11 @@ inline m4x4f32 m4x4f32_mul_m4x4f32(const m4x4f32 *p_m0, const m4x4f32 *p_m1) {
 	return result;
 }
 
+inline v2i32 v2i32_add_v2i32(v2i32 v0, v2i32 v1){
+	v2i32 result = { v0.x + v1.x, v0.y + v1.y };
+	return result;
+}
+
 inline v3f32 v3f32_add_v3f32(v3f32 v0, v3f32 v1) {
 	v3f32 result = { v0.x + v1.x, v0.y + v1.y, v0.z + v1.z };
 	return result;

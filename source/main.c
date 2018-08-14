@@ -26,9 +26,9 @@ typedef int DXGI_FORMAT;
 #define TILE_WIDTH	32 //820;
 #define TILE_HEIGHT 32 //1000;
 
-#define WIDTH_IN_TILES	WIDTH/TILE_WIDTH
-#define HEIGHT_IN_TILES HEIGHT/TILE_HEIGHT
-#define NUM_BINS WIDTH_IN_TILES*HEIGHT_IN_TILES
+#define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
+#define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
+#define NUM_BINS (WIDTH_IN_TILES*HEIGHT_IN_TILES)
 
 const int frame_width = WIDTH;
 const int frame_height = HEIGHT;
@@ -276,7 +276,7 @@ inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32
 	p_edge->c = c;
 }
 
-inline bool is_inside_edge(Setup *p_setup, u32 edge_index, v2i32 frag_coord) {
+inline bool is_inside_edge(Setup *p_setup, const u32 edge_index, const v2i32 frag_coord) {
 	i32 a = p_setup->a_edge_functions[edge_index].a;
 	i32 b = p_setup->a_edge_functions[edge_index].b;
 	i32 c = p_setup->a_edge_functions[edge_index].c;
@@ -620,7 +620,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 	rmt_EndCPUSample();
 }
 
-void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids ) {
+void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_max_possible_fragment_count, u32 **pp_triangle_ids ) {
 	rmt_BeginCPUSample(binner, 0);
 	
 	*pp_triangle_ids =  malloc(sizeof(u32) * assembled_triangle_count * NUM_BINS);
@@ -630,11 +630,10 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		a_bins[bin_index].num_triangles = 0;
 	}
 
+	u32 num_triangles_in_all_bins = 0;
+
 	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
 		Triangle* p_tri = p_triangles + triangle_index;
-		v4f32* p_attributes = p_tri->p_attributes;
-
-		const u32 width_in_tiles = WIDTH / TILE_WIDTH;
 
 		v2i32 min_bounds_in_tiles = { MAX(p_tri->min_bounds.x / TILE_WIDTH, 0), MAX(p_tri->min_bounds.y / TILE_HEIGHT, 0) };
 		v2i32 max_bounds_in_tiles = { MIN(p_tri->max_bounds.x / TILE_WIDTH, WIDTH_IN_TILES -1), MIN(p_tri->max_bounds.y / TILE_HEIGHT, HEIGHT_IN_TILES-1) };
@@ -644,9 +643,11 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 				u32 bin_index = y * WIDTH_IN_TILES + x;
 				Bin *p_bin = a_bins + bin_index;
 				p_bin->p_triangle_ids[p_bin->num_triangles++] = triangle_index;
+				num_triangles_in_all_bins++;
 			}
 		}
 	}
+	p_max_possible_fragment_count = num_triangles_in_all_bins * TILE_WIDTH * TILE_HEIGHT;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
 
 	rmt_EndCPUSample();
 }
@@ -658,22 +659,26 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 	u32 current_fragment_index = 0;
 	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
 
-	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
-		Triangle* p_tri = p_triangles + triangle_index;
-		v4f32* p_attributes = p_tri->p_attributes;
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		Bin bin = a_bins[bin_index];
+		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH-1, TILE_HEIGHT-1});
+		for(u32 triangle_index = 0; triangle_index < bin.num_triangles; ++triangle_index) {
+			Triangle* p_tri = p_triangles + bin.p_triangle_ids[triangle_index];
+			v4f32* p_attributes = p_tri->p_attributes;
+			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
+				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
+					v2i32 frag_coords = { x,y };
+					if(is_inside_triangle(&p_tri->setup, frag_coords)) {
+						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
 
-		for(i32 y = p_tri->min_bounds.y; y <= p_tri->max_bounds.y; ++y) {
-			for(i32 x = p_tri->min_bounds.x; x <= p_tri->max_bounds.x; ++x) {
-				v2i32 frag_coords = { x,y };
-				if(is_inside_triangle(&p_tri->setup, frag_coords)) {
-					v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
-
-					Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
-					p_fragment->coordinates = frag_coords;
-					p_fragment->p_attributes = p_attributes;
-					p_fragment->barycentric_coords = barycentric_coords;
-					p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+						Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
+						p_fragment->coordinates = frag_coords;
+						p_fragment->p_attributes = p_attributes;
+						p_fragment->barycentric_coords = barycentric_coords;
+						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+					}
 				}
 			}
 		}
@@ -798,7 +803,7 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &max_possible_fragment_count, &p_triangles, &p_attributes);
 	
 	u32 *p_triangle_ids = NULL;
-	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids);
+	run_binner(assembled_triangle_count, p_triangles, &max_possible_fragment_count, &p_triangle_ids);
 
 	Fragment *p_fragments = NULL;
 	u32 num_fragments;
