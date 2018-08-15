@@ -2,7 +2,7 @@
 
 #define LEAN_AND_MEAN
 #include <windows.h>
-
+#include <omp.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <assert.h>
@@ -135,8 +135,10 @@ typedef struct Triangle {
 } Triangle;
 
 typedef struct Bin {
-	u32 *p_triangle_ids;
-	u32 num_triangles;
+	u32 index;
+	u32 num_triangles_self;
+	u32 num_triangles_upto;
+	u32 num_fragments;
 } Bin;
 
 typedef struct Fragment {
@@ -180,7 +182,7 @@ PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
 enkiTaskScheduler*	p_enki_task_scheduler;
-enkiTaskSet*		p_triangle_rasterization_task;
+enkiTaskSet*		p_rasterization_task_set;
 Bin					a_bins[NUM_BINS];
 
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
@@ -626,8 +628,10 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 	*pp_triangle_ids =  malloc(sizeof(u32) * assembled_triangle_count * NUM_BINS);
 
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
-		a_bins[bin_index].p_triangle_ids = (*pp_triangle_ids) + (bin_index * assembled_triangle_count);
-		a_bins[bin_index].num_triangles = 0;
+		a_bins[bin_index].index = bin_index;
+		a_bins[bin_index].num_triangles_self = 0;
+		a_bins[bin_index].num_triangles_upto = 0;
+		a_bins[bin_index].num_fragments = 0;
 	}
 
 	u32 num_triangles_in_all_bins = 0;
@@ -642,29 +646,37 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 			for(i32 x = min_bounds_in_tiles.x; x <= max_bounds_in_tiles.x; ++x) {
 				u32 bin_index = y * WIDTH_IN_TILES + x;
 				Bin *p_bin = a_bins + bin_index;
-				p_bin->p_triangle_ids[p_bin->num_triangles++] = triangle_index;
+				*((*pp_triangle_ids) + bin_index * assembled_triangle_count + p_bin->num_triangles_self++) = triangle_index;
 				num_triangles_in_all_bins++;
 			}
 		}
 	}
-	p_max_possible_fragment_count = num_triangles_in_all_bins * TILE_WIDTH * TILE_HEIGHT;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
+
+	for(u32 bin_index = 1; bin_index < NUM_BINS; ++bin_index) {
+		a_bins[bin_index].num_triangles_upto = a_bins[bin_index - 1].num_triangles_self + a_bins[bin_index - 1].num_triangles_upto;
+	}
+
+	*p_max_possible_fragment_count = num_triangles_in_all_bins * TILE_WIDTH * TILE_HEIGHT;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
 
 	rmt_EndCPUSample();
 }
 
-void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_num_fragments, Fragment **pp_fragments) {
+void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 	Viewport viewport = graphics_pipeline.rs.viewport;
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-	u32 current_fragment_index = 0;
+	
 	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
 
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
-		Bin bin = a_bins[bin_index];
 		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
 		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH-1, TILE_HEIGHT-1});
-		for(u32 triangle_index = 0; triangle_index < bin.num_triangles; ++triangle_index) {
-			Triangle* p_tri = p_triangles + bin.p_triangle_ids[triangle_index];
+		Bin *p_bin = &a_bins[bin_index];
+		u32 num_triangles_of_current_bin = p_bin->num_triangles_self;
+		u32 total_num_triangles_upto_current_bin = p_bin->num_triangles_upto;
+		u32 current_fragment_index = 0;
+		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
+			Triangle* p_tri = p_triangles + *(p_triangle_ids + bin_index * assembled_triangle_count + triangle_index);
 			v4f32* p_attributes = p_tri->p_attributes;
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
 				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
@@ -673,7 +685,7 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
 						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
 
-						Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
+						Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
 						p_fragment->coordinates = frag_coords;
 						p_fragment->p_attributes = p_attributes;
 						p_fragment->barycentric_coords = barycentric_coords;
@@ -682,11 +694,118 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 				}
 			}
 		}
+		p_bin->num_fragments = current_fragment_index;
 	}
-	*p_num_fragments = current_fragment_index;
+
 	rmt_EndCPUSample();
 }
 
+typedef struct RasterizeBinTaskSetArgs{
+	const Triangle *p_triangles;
+	const u32 *p_triangle_ids;
+	const Fragment *p_fragments;
+	u32 assembled_triangle_count;
+} RasterizeBinTaskSetArgs;
+
+void rasterize_bin_task_set(uint32_t start_, uint32_t end, uint32_t threadnum_, void* pArgs_) {
+	RasterizeBinTaskSetArgs args = *(RasterizeBinTaskSetArgs*)pArgs_;
+
+	for(u32 bin_index = start_; bin_index < end; ++bin_index) {
+		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
+		Bin *p_bin = &a_bins[bin_index];
+		u32 num_triangles_of_current_bin = p_bin->num_triangles_self;
+		u32 total_num_triangles_upto_current_bin = p_bin->num_triangles_upto;
+		u32 current_fragment_index = 0;
+		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
+			Triangle* p_tri = args.p_triangles + *(args.p_triangle_ids + bin_index * args.assembled_triangle_count + triangle_index);
+			v4f32* p_attributes = p_tri->p_attributes;
+			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
+				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
+					v2i32 frag_coords = { x,y };
+					if(is_inside_triangle(&p_tri->setup, frag_coords)) {
+						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
+
+						Fragment *p_fragment = (args.p_fragments + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
+						p_fragment->coordinates = frag_coords;
+						p_fragment->p_attributes = p_attributes;
+						p_fragment->barycentric_coords = barycentric_coords;
+						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+					}
+				}
+			}
+		}
+		p_bin->num_fragments = current_fragment_index;
+	}
+}
+
+void run_rasterizer_enki_ts(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
+	rmt_BeginCPUSample(rasterizer_stage, 0);
+	Viewport viewport = graphics_pipeline.rs.viewport;
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
+	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
+	
+	RasterizeBinTaskSetArgs args;
+	args.assembled_triangle_count = assembled_triangle_count;
+	args.p_triangles = p_triangles;
+	args.p_triangle_ids = p_triangle_ids;
+	args.p_fragments = *pp_fragments;
+
+	p_rasterization_task_set = enkiCreateTaskSet(p_enki_task_scheduler, rasterize_bin_task_set);
+	enkiAddTaskSetToPipeMinRange(p_enki_task_scheduler, p_rasterization_task_set, &args, NUM_BINS, 1);
+	enkiWaitForTaskSet(p_enki_task_scheduler, p_rasterization_task_set);
+
+	rmt_EndCPUSample();
+}
+
+void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
+	rmt_BeginCPUSample(rasterizer_stage, 0);
+	Viewport viewport = graphics_pipeline.rs.viewport;
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
+	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
+
+	u32 a_num_fragments[NUM_BINS];
+
+	#pragma omp parallel for schedule(dynamic)
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
+		Bin *p_bin = &a_bins[bin_index];
+		u32 num_triangles_of_current_bin = p_bin->num_triangles_self;
+		u32 total_num_triangles_upto_current_bin = p_bin->num_triangles_upto;
+		u32 current_fragment_index = 0;
+		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
+			Triangle* p_tri = p_triangles + *(p_triangle_ids + bin_index * assembled_triangle_count + triangle_index);
+			v4f32* p_attributes = p_tri->p_attributes;
+			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
+				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
+					v2i32 frag_coords = { x,y };
+					if(is_inside_triangle(&p_tri->setup, frag_coords)) {
+						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
+
+						Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
+						p_fragment->coordinates = frag_coords;
+						p_fragment->p_attributes = p_attributes;
+						p_fragment->barycentric_coords = barycentric_coords;
+						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+					}
+				}
+			}
+		}
+		//p_bin->num_fragments = current_fragment_index;
+		a_num_fragments[bin_index] = current_fragment_index;
+	}
+
+	for(int i = 0; i < NUM_BINS; ++i) {
+		a_bins[i].num_fragments = a_num_fragments[i];
+	}
+
+	rmt_EndCPUSample();
+}
 //void rasterize_triangle() {
 //
 //
@@ -740,13 +859,7 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 //		}
 //	}
 //
-//	pPSumTask = enkiCreateTaskSet(pETS, ParallelSumTaskSetFunc);
-//	pPSumReductionTask = enkiCreateTaskSet(pETS, ParallelReductionSumTaskSet);
-//
-//	max = 10 * 1024 * 1024;
-//	inMax_outSum = max;
-//	enkiAddTaskSetToPipe(pETS, pPSumReductionTask, &inMax_outSum, 1);
-//	enkiWaitForTaskSet(pETS, pPSumReductionTask);
+
 //
 //	*p_num_fragments = current_fragment_index;
 //	rmt_EndCPUSample();
@@ -757,28 +870,31 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 void run_pixel_shader_stage(const Fragment* p_fragments, u32 num_fragments) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-	for(u32 frag_index = 0; frag_index < num_fragments; ++frag_index) {
-		Fragment *p_fragment = p_fragments + frag_index;
-		v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
-		for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-			a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
-		}
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		Bin bin = a_bins[bin_index];
+		for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
+			Fragment *p_fragment = p_fragments + (bin.num_triangles_upto * TILE_WIDTH * TILE_HEIGHT) + frag_index;
+			v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
+			for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+				a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
+			}
 
-		// Early-Z Test
-		// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
-		f32 fragment_z = a_fragment_attributes[0].z;
-		const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
-		f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
-		if(*p_depth > fragment_z) {
-			continue;
-		}
-		*p_depth = fragment_z;
+			// Early-Z Test
+			// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+			f32 fragment_z = a_fragment_attributes[0].z;
+			const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
+			f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+			if(*p_depth > fragment_z) {
+				continue;
+			}
+			*p_depth = fragment_z;
 
-		// Pixel Shader
-		v4f32 fragment_out_color;
-		graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
-		// Output Merger
-		graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+			// Pixel Shader
+			v4f32 fragment_out_color;
+			graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
+			// Output Merger
+			graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+		}
 	}
 	rmt_EndCPUSample();
 }
@@ -807,7 +923,9 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 
 	Fragment *p_fragments = NULL;
 	u32 num_fragments;
-	run_rasterizer(max_possible_fragment_count, assembled_triangle_count, p_triangles, &num_fragments, &p_fragments);
+	//run_rasterizer(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
+	//run_rasterizer_enki_ts(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
+	run_rasterizer_omp(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
 
 	run_pixel_shader_stage(p_fragments, num_fragments);
 
@@ -1063,6 +1181,32 @@ void update() {
 	rmt_EndCPUSample();
 }
 
+static char* a_name_table[] = {
+	"enkiTS_00", "enkiTS_01", "enkiTS_02", "enkiTS_03", "enkiTS_04", "enkiTS_05", "enkiTS_06", "enkiTS_07", "enkiTS_08", "enkiTS_09",
+	"enkiTS_10", "enkiTS_11", "enkiTS_12", "enkiTS_13", "enkiTS_14", "enkiTS_15", "enkiTS_16", "enkiTS_17", "enkiTS_18", "enkiTS_19",
+	"enkiTS_20", "enkiTS_21", "enkiTS_22", "enkiTS_23", "enkiTS_24", "enkiTS_25", "enkiTS_26", "enkiTS_27", "enkiTS_28", "enkiTS_29",
+	"enkiTS_30", "enkiTS_31", "enkiTS_32", "enkiTS_33", "enkiTS_34", "enkiTS_35", "enkiTS_36", "enkiTS_37", "enkiTS_38", "enkiTS_39",
+	"enkiTS_40", "enkiTS_41", "enkiTS_42", "enkiTS_43", "enkiTS_44", "enkiTS_45", "enkiTS_46", "enkiTS_47", "enkiTS_48", "enkiTS_49",
+	"enkiTS_50", "enkiTS_51", "enkiTS_52", "enkiTS_53", "enkiTS_54", "enkiTS_55", "enkiTS_56", "enkiTS_57", "enkiTS_58", "enkiTS_59",
+	"enkiTS_60", "enkiTS_61", "enkiTS_62", "enkiTS_63", "enkiTS_64", "enkiTS_XX",
+};
+
+const size_t name_table_size = sizeof(a_name_table) / sizeof(const char*);
+
+void thread_start_callback(uint32_t threadnum_) {
+	uint32_t num_name = threadnum_;
+	if(num_name >= name_table_size) { num_name = name_table_size - 1; }
+	rmt_SetCurrentThreadName(a_name_table[num_name]);
+}
+
+void wait_start_callback(uint32_t threadnum_) {
+	rmt_BeginCPUSample(WAIT,0);
+}
+
+void wait_stop_callback(uint32_t threadnum_) {
+	rmt_EndCPUSample();
+}
+
 int CALLBACK WinMain(
 	HINSTANCE hInstance,
 	HINSTANCE hPrevInstance,
@@ -1074,7 +1218,10 @@ int CALLBACK WinMain(
 	rmt_CreateGlobalInstance(&p_remotery);
 	// enkiTS
 	p_enki_task_scheduler = enkiNewTaskScheduler();
-	enkiInitTaskScheduler(p_enki_task_scheduler);
+	enkiGetProfilerCallbacks(p_enki_task_scheduler)->threadStart = thread_start_callback;
+	enkiGetProfilerCallbacks(p_enki_task_scheduler)->waitStart = wait_start_callback;
+	enkiGetProfilerCallbacks(p_enki_task_scheduler)->waitStop = wait_stop_callback;
+	//enkiInitTaskScheduler(p_enki_task_scheduler,5);
 
 	const char *p_window_class_name = "Malevich Window Class";
 	const char *p_window_name = "Malevich";
