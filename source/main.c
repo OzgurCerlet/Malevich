@@ -13,18 +13,16 @@
 #include "external/octarine/octarine_mesh.h"
 typedef int DXGI_FORMAT;
 #include "external/octarine/octarine_image.h"
-#include "external/enkiTS/TaskScheduler_c.h"
 
 #pragma comment(lib, "octarine_mesh.lib")
 #pragma comment(lib, "octarine_image.lib")
-#pragma comment(lib, "enkiTS.lib")
 
 #define WIDTH	512 //820;
 #define HEIGHT	512 //1000;
 #define STRECTH_FACTOR 1
 
-#define TILE_WIDTH	32 //820;
-#define TILE_HEIGHT 32 //1000;
+#define TILE_WIDTH	8 //820;
+#define TILE_HEIGHT 8 //1000;
 
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
@@ -181,8 +179,6 @@ Texture2D env_tex;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
-enkiTaskScheduler*	p_enki_task_scheduler;
-enkiTaskSet*		p_rasterization_task_set;
 Bin					a_bins[NUM_BINS];
 
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
@@ -282,6 +278,7 @@ inline bool is_inside_edge(Setup *p_setup, const u32 edge_index, const v2i32 fra
 	i32 a = p_setup->a_edge_functions[edge_index].a;
 	i32 b = p_setup->a_edge_functions[edge_index].b;
 	i32 c = p_setup->a_edge_functions[edge_index].c;
+	// Need to lift a and be to c's precision level
 	i32 signed_distance = ((a * frag_coord.x) << NUM_SUB_PIXEL_PRECISION_BITS) + ((b * frag_coord.y) << NUM_SUB_PIXEL_PRECISION_BITS) + c;
 	p_setup->a_signed_distances[edge_index] = signed_distance;
 	if(signed_distance > 0) return true;
@@ -567,18 +564,38 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			y[2] = floor(a_vertex_positions[2].y * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + 0.5);
 
 			// triangle setup
-			signed_area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
-			if(signed_area == 0) { continue; } // degenerate triangle 
-			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
+			signed_area = ((x[1] - x[0]) * (y[2] - y[0])) - ((x[2] - x[0]) * (y[1] - y[0]));
+			if(signed_area == 0) { 
+				continue; 
+			} // degenerate triangle 
+			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { 
+				continue; 
+			}; // degenerate triangle ?
 
 			// face culling with winding order
-			//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+			//if(signed_area < 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
 			Setup setup;
 			set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
 			set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
 			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
-			setup.one_over_area = fabs(1.f / (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)));
+
+			//i32 a = y0 - y1;
+			//i32 b = x1 - x0;
+			//if(signed_area < 0) {
+			//	a = -a;
+			//	b = -b;
+			//}
+			//i32 c = -a * x0 - b * y0;
+
+			//p_edge->a = a;
+			//p_edge->b = b;
+			//p_edge->c = c;
+			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
+			if(signed_area_f32 == 0) {
+					DebugBreak();
+			}
+			setup.one_over_area = fabs(1.f / signed_area_f32);
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
 			setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
 			setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
@@ -687,9 +704,9 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 
 						Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
 						p_fragment->coordinates = frag_coords;
-						p_fragment->p_attributes = p_attributes;
-						p_fragment->barycentric_coords = barycentric_coords;
-						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+						//p_fragment->p_attributes = p_attributes;
+						//p_fragment->barycentric_coords = barycentric_coords;
+						//p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
 					}
 				}
 			}
@@ -740,26 +757,6 @@ void rasterize_bin_task_set(uint32_t start_, uint32_t end, uint32_t threadnum_, 
 	}
 }
 
-void run_rasterizer_enki_ts(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
-	rmt_BeginCPUSample(rasterizer_stage, 0);
-	Viewport viewport = graphics_pipeline.rs.viewport;
-	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-
-	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
-	
-	RasterizeBinTaskSetArgs args;
-	args.assembled_triangle_count = assembled_triangle_count;
-	args.p_triangles = p_triangles;
-	args.p_triangle_ids = p_triangle_ids;
-	args.p_fragments = *pp_fragments;
-
-	p_rasterization_task_set = enkiCreateTaskSet(p_enki_task_scheduler, rasterize_bin_task_set);
-	enkiAddTaskSetToPipeMinRange(p_enki_task_scheduler, p_rasterization_task_set, &args, NUM_BINS, 1);
-	enkiWaitForTaskSet(p_enki_task_scheduler, p_rasterization_task_set);
-
-	rmt_EndCPUSample();
-}
-
 void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 	Viewport viewport = graphics_pipeline.rs.viewport;
@@ -783,16 +780,28 @@ void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
 				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
 					v2i32 frag_coords = { x,y };
-					if(is_inside_triangle(&p_tri->setup, frag_coords)) {
-						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
+					i32 alpha = (p_tri->setup.a_edge_functions[0].a * x + p_tri->setup.a_edge_functions[0].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[0].c;
+					i32 beta =	(p_tri->setup.a_edge_functions[1].a * x + p_tri->setup.a_edge_functions[1].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[1].c;
+					i32 gamma = (p_tri->setup.a_edge_functions[2].a * x + p_tri->setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[2].c;
+					i32 mask = 0 < (alpha | beta | gamma) ? 1 : 0;
+					if((mask & mask) == 0) { continue; };
 
-						Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
-						p_fragment->coordinates = frag_coords;
-						p_fragment->p_attributes = p_attributes;
-						p_fragment->barycentric_coords = barycentric_coords;
-						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
-					}
+					//v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
+					v2f32 barycentric_coords = { (float)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_tri->setup.one_over_area, (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_tri->setup.one_over_area };
+					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
+
+					//Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
+					//p_fragment->coordinates = frag_coords;
+					//p_fragment->p_attributes = p_attributes;
+					//p_fragment->barycentric_coords = barycentric_coords;
+					//p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
+
+					Fragment frag;
+					frag.coordinates = frag_coords;
+					frag.p_attributes = p_attributes;
+					frag.barycentric_coords = barycentric_coords;
+					frag.perspective_barycentric_coords = barycentric_coords;// perspective_barycentric_coords;
+					(*pp_fragments)[(total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++] = frag;
 				}
 			}
 		}
@@ -806,70 +815,43 @@ void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_
 
 	rmt_EndCPUSample();
 }
-//void rasterize_triangle() {
-//
-//
-//	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
-//		Triangle* p_tri = p_triangles + triangle_index;
-//		v4f32* p_attributes = p_tri->p_attributes;
-//
-//		for(i32 y = p_tri->min_bounds.y; y <= p_tri->max_bounds.y; ++y) {
-//			for(i32 x = p_tri->min_bounds.x; x <= p_tri->max_bounds.x; ++x) {
-//				v2i32 frag_coords = { x,y };
-//				if(is_inside_triangle(&p_tri->setup, frag_coords)) { // use edge functions for inclusion testing					
-//					v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-//					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
-//
-//					Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
-//					p_fragment->coordinates = frag_coords;
-//					p_fragment->p_attributes = p_attributes;
-//					p_fragment->barycentric_coords = barycentric_coords;
-//					p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
-//				}
-//			}
-//		}
-//	}
-//}
-
-//void run_rasterizer_parellel(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_num_fragments, Fragment **pp_fragments) {
-//	rmt_BeginCPUSample(rasterizer_stage, 0);
-//	Viewport viewport = graphics_pipeline.rs.viewport;
-//	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-//	u32 current_fragment_index = 0;
-//	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
-//
-//	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
-//		Triangle* p_tri = p_triangles + triangle_index;
-//		v4f32* p_attributes = p_tri->p_attributes;
-//
-//		for(i32 y = p_tri->min_bounds.y; y <= p_tri->max_bounds.y; ++y) {
-//			for(i32 x = p_tri->min_bounds.x; x <= p_tri->max_bounds.x; ++x) {
-//				v2i32 frag_coords = { x,y };
-//				if(is_inside_triangle(&p_tri->setup, frag_coords)) { // use edge functions for inclusion testing					
-//					v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-//					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
-//
-//					Fragment *p_fragment = (*pp_fragments) + current_fragment_index++;
-//					p_fragment->coordinates = frag_coords;
-//					p_fragment->p_attributes = p_attributes;
-//					p_fragment->barycentric_coords = barycentric_coords;
-//					p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
-//				}
-//			}
-//		}
-//	}
-//
-
-//
-//	*p_num_fragments = current_fragment_index;
-//	rmt_EndCPUSample();
-//}
-
-
 
 void run_pixel_shader_stage(const Fragment* p_fragments, u32 num_fragments) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		Bin bin = a_bins[bin_index];
+		for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
+			Fragment *p_fragment = p_fragments + (bin.num_triangles_upto * TILE_WIDTH * TILE_HEIGHT) + frag_index;
+			v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
+			for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+				a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
+			}
+
+			// Early-Z Test
+			// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+			f32 fragment_z = a_fragment_attributes[0].z;
+			const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
+			f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+			if(*p_depth > fragment_z) {
+				continue;
+			}
+			*p_depth = fragment_z;
+
+			// Pixel Shader
+			v4f32 fragment_out_color;
+			graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
+			// Output Merger
+			graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+		}
+	}
+	rmt_EndCPUSample();
+}
+
+void run_pixel_shader_stage_omp(const Fragment* p_fragments, u32 num_fragments) {
+	rmt_BeginCPUSample(pixel_shader_stage, 0);
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+	#pragma omp parallel for schedule(dynamic)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 		Bin bin = a_bins[bin_index];
 		for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
@@ -924,10 +906,10 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	Fragment *p_fragments = NULL;
 	u32 num_fragments;
 	//run_rasterizer(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
-	//run_rasterizer_enki_ts(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
 	run_rasterizer_omp(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
 
-	run_pixel_shader_stage(p_fragments, num_fragments);
+	//run_pixel_shader_stage(p_fragments, num_fragments);
+	run_pixel_shader_stage_omp(p_fragments, num_fragments);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
@@ -1000,7 +982,7 @@ void init() {
 
 		void *p_data = NULL;
 		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
-		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/plane.octrn", &test_mesh.header, &p_data);
+		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/pyramid.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(false); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -1216,12 +1198,6 @@ int CALLBACK WinMain(
 	// Remotery
 	Remotery* p_remotery;
 	rmt_CreateGlobalInstance(&p_remotery);
-	// enkiTS
-	p_enki_task_scheduler = enkiNewTaskScheduler();
-	enkiGetProfilerCallbacks(p_enki_task_scheduler)->threadStart = thread_start_callback;
-	enkiGetProfilerCallbacks(p_enki_task_scheduler)->waitStart = wait_start_callback;
-	enkiGetProfilerCallbacks(p_enki_task_scheduler)->waitStop = wait_stop_callback;
-	//enkiInitTaskScheduler(p_enki_task_scheduler,5);
 
 	const char *p_window_class_name = "Malevich Window Class";
 	const char *p_window_name = "Malevich";
@@ -1274,7 +1250,6 @@ int CALLBACK WinMain(
 	}
 
 	rmt_DestroyGlobalInstance(p_remotery);
-	enkiDeleteTaskScheduler(p_enki_task_scheduler);
 
 	return 0;
 }
