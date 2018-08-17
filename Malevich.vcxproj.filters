@@ -21,9 +21,6 @@
     <Filter Include="Source Files\shaders">
       <UniqueIdentifier>{c8a6e973-67a3-4f05-a83b-50e51a7641c8}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\external\enkiTS">
-      <UniqueIdentifier>{a6b723c4-564b-4d56-af21-b46960227e28}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\main.c">
@@ -54,9 +51,6 @@
     </ClInclude>
     <ClInclude Include="source\external\octarine\octarine_mesh.h">
       <Filter>Source Files\external\octarine</Filter>
-    </ClInclude>
-    <ClInclude Include="source\external\enkiTS\TaskScheduler_c.h">
-      <Filter>Source Files\external\enkiTS</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

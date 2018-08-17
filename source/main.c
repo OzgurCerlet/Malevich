@@ -24,6 +24,8 @@ typedef int DXGI_FORMAT;
 #define TILE_WIDTH	8 //820;
 #define TILE_HEIGHT 8 //1000;
 
+#define VECTOR_WIDTH 8
+
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
 #define NUM_BINS (WIDTH_IN_TILES*HEIGHT_IN_TILES)
@@ -120,7 +122,6 @@ typedef struct EdgeFunction{
 
 typedef struct Setup {
 	EdgeFunction a_edge_functions[3];
-	i32 a_signed_distances[3];
 	f32 a_reciprocal_ws[3];
 	f32 one_over_area;
 }Setup;
@@ -133,10 +134,8 @@ typedef struct Triangle {
 } Triangle;
 
 typedef struct Bin {
-	u32 index;
 	u32 num_triangles_self;
 	u32 num_triangles_upto;
-	u32 num_fragments;
 } Bin;
 
 typedef struct Fragment {
@@ -145,6 +144,16 @@ typedef struct Fragment {
 	v2f32 barycentric_coords;
 	v2f32 perspective_barycentric_coords;
 } Fragment;
+
+typedef struct TileInfo {
+	u32 triangle_id;
+	u64 fragment_mask;
+} TileInfo;
+
+typedef struct Tile {
+	u32 a_colors[64];
+	f32 a_depths[64];
+} Tile;
 
 typedef struct PerFrameCB {
 	m4x4f32 clip_from_world;
@@ -275,18 +284,18 @@ inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32
 }
 
 inline bool is_inside_edge(Setup *p_setup, const u32 edge_index, const v2i32 frag_coord) {
-	i32 a = p_setup->a_edge_functions[edge_index].a;
-	i32 b = p_setup->a_edge_functions[edge_index].b;
-	i32 c = p_setup->a_edge_functions[edge_index].c;
-	// Need to lift a and be to c's precision level
-	i32 signed_distance = ((a * frag_coord.x) << NUM_SUB_PIXEL_PRECISION_BITS) + ((b * frag_coord.y) << NUM_SUB_PIXEL_PRECISION_BITS) + c;
-	p_setup->a_signed_distances[edge_index] = signed_distance;
-	if(signed_distance > 0) return true;
-	if(signed_distance < 0) return false;
-	if(a > 0) return true;
-	if(a < 0) return false;
-	if(b > 0) return true;
-	return false;
+	//i32 a = p_setup->a_edge_functions[edge_index].a;
+	//i32 b = p_setup->a_edge_functions[edge_index].b;
+	//i32 c = p_setup->a_edge_functions[edge_index].c;
+	//// Need to lift a and be to c's precision level
+	//i32 signed_distance = ((a * frag_coord.x) << NUM_SUB_PIXEL_PRECISION_BITS) + ((b * frag_coord.y) << NUM_SUB_PIXEL_PRECISION_BITS) + c;
+	//p_setup->a_signed_distances[edge_index] = signed_distance;
+	//if(signed_distance > 0) return true;
+	//if(signed_distance < 0) return false;
+	//if(a > 0) return true;
+	//if(a < 0) return false;
+	//if(b > 0) return true;
+	//return false;
 }
 
 inline bool is_inside_triangle(Setup *p_setup, v2i32 frag_coord) {
@@ -298,11 +307,11 @@ inline bool is_inside_triangle(Setup *p_setup, v2i32 frag_coord) {
 
 // In this context, barycentric coords (u,v,w) = areal coordinates (A1/A,A2/A,A0/A) => u+v+w = 1;
 inline v2f32 compute_barycentric_coords(const Setup *p_setup) {
-	v2f32 barycentric_coords;
-	barycentric_coords.x = (float)(p_setup->a_signed_distances[1] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
-	barycentric_coords.y = (float)(p_setup->a_signed_distances[2] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
+	//v2f32 barycentric_coords;
+	//barycentric_coords.x = (float)(p_setup->a_signed_distances[1] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
+	//barycentric_coords.y = (float)(p_setup->a_signed_distances[2] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
 
-	return barycentric_coords;
+	//return barycentric_coords;
 }
 
 inline v2f32 compute_perspective_barycentric_coords(const Setup *p_setup, v2f32 barycentric_coordinates) {
@@ -573,7 +582,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			}; // degenerate triangle ?
 
 			// face culling with winding order
-			//if(signed_area < 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+			//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
 			Setup setup;
 			set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
@@ -642,28 +651,27 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_max_possible_fragment_count, u32 **pp_triangle_ids ) {
 	rmt_BeginCPUSample(binner, 0);
 	
-	*pp_triangle_ids =  malloc(sizeof(u32) * assembled_triangle_count * NUM_BINS);
+	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / 8;
+	*pp_triangle_ids =  malloc(sizeof(u32) * assumed_max_num_triangles_per_bin * NUM_BINS);
 
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
-		a_bins[bin_index].index = bin_index;
 		a_bins[bin_index].num_triangles_self = 0;
 		a_bins[bin_index].num_triangles_upto = 0;
-		a_bins[bin_index].num_fragments = 0;
 	}
 
 	u32 num_triangles_in_all_bins = 0;
 
 	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
-		Triangle* p_tri = p_triangles + triangle_index;
+		Triangle tri = p_triangles[triangle_index];
 
-		v2i32 min_bounds_in_tiles = { MAX(p_tri->min_bounds.x / TILE_WIDTH, 0), MAX(p_tri->min_bounds.y / TILE_HEIGHT, 0) };
-		v2i32 max_bounds_in_tiles = { MIN(p_tri->max_bounds.x / TILE_WIDTH, WIDTH_IN_TILES -1), MIN(p_tri->max_bounds.y / TILE_HEIGHT, HEIGHT_IN_TILES-1) };
+		v2i32 min_bounds_in_tiles = { MAX(tri.min_bounds.x / TILE_WIDTH, 0), MAX(tri.min_bounds.y / TILE_HEIGHT, 0) };
+		v2i32 max_bounds_in_tiles = { MIN(tri.max_bounds.x / TILE_WIDTH, WIDTH_IN_TILES -1), MIN(tri.max_bounds.y / TILE_HEIGHT, HEIGHT_IN_TILES-1) };
 
 		for(i32 y = min_bounds_in_tiles.y; y <= max_bounds_in_tiles.y; ++y) {
 			for(i32 x = min_bounds_in_tiles.x; x <= max_bounds_in_tiles.x; ++x) {
 				u32 bin_index = y * WIDTH_IN_TILES + x;
 				Bin *p_bin = a_bins + bin_index;
-				*((*pp_triangle_ids) + bin_index * assembled_triangle_count + p_bin->num_triangles_self++) = triangle_index;
+				*((*pp_triangle_ids) + bin_index * assumed_max_num_triangles_per_bin + p_bin->num_triangles_self++) = triangle_index;
 				num_triangles_in_all_bins++;
 			}
 		}
@@ -673,6 +681,47 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		a_bins[bin_index].num_triangles_upto = a_bins[bin_index - 1].num_triangles_self + a_bins[bin_index - 1].num_triangles_upto;
 	}
 
+	*p_max_possible_fragment_count = num_triangles_in_all_bins;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
+
+	rmt_EndCPUSample();
+}
+
+void run_binner_omp(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_max_possible_fragment_count, u32 **pp_triangle_ids) {
+	rmt_BeginCPUSample(binner, 0);
+
+	*pp_triangle_ids = malloc(sizeof(u32) * assembled_triangle_count * NUM_BINS);
+
+	#pragma omp parallel for 
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		Bin bin;
+		bin.num_triangles_self = 0;
+		bin.num_triangles_upto = 0;
+
+		u32 num_triangles = 0;
+		for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
+			Triangle* p_tri = p_triangles + triangle_index;
+
+			u32 min_x_in_tiles = MAX(p_tri->min_bounds.x / TILE_WIDTH,	0);
+			u32 min_y_in_tiles = MAX(p_tri->min_bounds.y / TILE_HEIGHT, 0);
+			u32 max_x_in_tiles = MIN(p_tri->max_bounds.x / TILE_WIDTH,	WIDTH_IN_TILES - 1);
+			u32 max_y_in_tiles = MIN(p_tri->max_bounds.y / TILE_HEIGHT, HEIGHT_IN_TILES - 1);
+
+			u32 y = bin_index / WIDTH_IN_TILES;
+			u32 x = bin_index % WIDTH_IN_TILES;
+
+			if(x >= min_x_in_tiles && x <= max_x_in_tiles && y >= min_y_in_tiles && y <= max_y_in_tiles) {
+				(*pp_triangle_ids)[ bin_index * assembled_triangle_count + num_triangles++] = triangle_index;
+			}
+		}
+		bin.num_triangles_self = num_triangles;
+		a_bins[bin_index] = bin;
+	}
+
+	for(u32 bin_index = 1; bin_index < NUM_BINS; ++bin_index) {
+		a_bins[bin_index].num_triangles_upto = a_bins[bin_index - 1].num_triangles_self + a_bins[bin_index - 1].num_triangles_upto;
+	}
+
+	u32 num_triangles_in_all_bins = a_bins[NUM_BINS - 1].num_triangles_upto + a_bins[NUM_BINS - 1].num_triangles_self;
 	*p_max_possible_fragment_count = num_triangles_in_all_bins * TILE_WIDTH * TILE_HEIGHT;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
 
 	rmt_EndCPUSample();
@@ -711,173 +760,301 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 				}
 			}
 		}
-		p_bin->num_fragments = current_fragment_index;
 	}
 
 	rmt_EndCPUSample();
 }
 
-typedef struct RasterizeBinTaskSetArgs{
-	const Triangle *p_triangles;
-	const u32 *p_triangle_ids;
-	const Fragment *p_fragments;
-	u32 assembled_triangle_count;
-} RasterizeBinTaskSetArgs;
-
-void rasterize_bin_task_set(uint32_t start_, uint32_t end, uint32_t threadnum_, void* pArgs_) {
-	RasterizeBinTaskSetArgs args = *(RasterizeBinTaskSetArgs*)pArgs_;
-
-	for(u32 bin_index = start_; bin_index < end; ++bin_index) {
-		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
-		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
-		Bin *p_bin = &a_bins[bin_index];
-		u32 num_triangles_of_current_bin = p_bin->num_triangles_self;
-		u32 total_num_triangles_upto_current_bin = p_bin->num_triangles_upto;
-		u32 current_fragment_index = 0;
-		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
-			Triangle* p_tri = args.p_triangles + *(args.p_triangle_ids + bin_index * args.assembled_triangle_count + triangle_index);
-			v4f32* p_attributes = p_tri->p_attributes;
-			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
-				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
-					v2i32 frag_coords = { x,y };
-					if(is_inside_triangle(&p_tri->setup, frag_coords)) {
-						v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-						v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
-
-						Fragment *p_fragment = (args.p_fragments + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
-						p_fragment->coordinates = frag_coords;
-						p_fragment->p_attributes = p_attributes;
-						p_fragment->barycentric_coords = barycentric_coords;
-						p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
-					}
-				}
-			}
-		}
-		p_bin->num_fragments = current_fragment_index;
-	}
-}
-
-void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, Fragment **pp_fragments) {
+void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, TileInfo **pp_fragments) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
-	Viewport viewport = graphics_pipeline.rs.viewport;
-	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-
-	*pp_fragments = malloc(max_possible_fragment_count * sizeof(Fragment));
-
-	u32 a_num_fragments[NUM_BINS];
+	
+	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / 8;
+	*pp_fragments = malloc(32 * NUM_BINS * sizeof(TileInfo));
 
 	#pragma omp parallel for schedule(dynamic)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+
 		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
 		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
-		Bin *p_bin = &a_bins[bin_index];
-		u32 num_triangles_of_current_bin = p_bin->num_triangles_self;
-		u32 total_num_triangles_upto_current_bin = p_bin->num_triangles_upto;
-		u32 current_fragment_index = 0;
+		Bin bin = a_bins[bin_index];
+		u32 num_triangles_of_current_bin = bin.num_triangles_self;
 		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
-			Triangle* p_tri = p_triangles + *(p_triangle_ids + bin_index * assembled_triangle_count + triangle_index);
-			v4f32* p_attributes = p_tri->p_attributes;
+			u32 triangle_id = p_triangle_ids[bin_index * assumed_max_num_triangles_per_bin + triangle_index];
+			TileInfo tile_info;
+			Triangle tri = p_triangles[triangle_id];
+			tile_info.triangle_id = triangle_id;
+			u64 fragment_mask = 0;
 			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
 				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
-					v2i32 frag_coords = { x,y };
-					i32 alpha = (p_tri->setup.a_edge_functions[0].a * x + p_tri->setup.a_edge_functions[0].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[0].c;
-					i32 beta =	(p_tri->setup.a_edge_functions[1].a * x + p_tri->setup.a_edge_functions[1].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[1].c;
-					i32 gamma = (p_tri->setup.a_edge_functions[2].a * x + p_tri->setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + p_tri->setup.a_edge_functions[2].c;
+					i32 alpha =	(tri.setup.a_edge_functions[0].a * x + tri.setup.a_edge_functions[0].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[0].c;
+					i32 beta =	(tri.setup.a_edge_functions[1].a * x + tri.setup.a_edge_functions[1].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[1].c;
+					i32 gamma =	(tri.setup.a_edge_functions[2].a * x + tri.setup.a_edge_functions[2].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[2].c;
 					i32 mask = 0 < (alpha | beta | gamma) ? 1 : 0;
-					if((mask & mask) == 0) { continue; };
-
-					//v2f32 barycentric_coords = compute_barycentric_coords(&p_tri->setup);
-					v2f32 barycentric_coords = { (float)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_tri->setup.one_over_area, (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_tri->setup.one_over_area };
-					v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&p_tri->setup, barycentric_coords);
-
-					//Fragment *p_fragment = ((*pp_fragments) + (total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++);
-					//p_fragment->coordinates = frag_coords;
-					//p_fragment->p_attributes = p_attributes;
-					//p_fragment->barycentric_coords = barycentric_coords;
-					//p_fragment->perspective_barycentric_coords = perspective_barycentric_coords;
-
-					Fragment frag;
-					frag.coordinates = frag_coords;
-					frag.p_attributes = p_attributes;
-					frag.barycentric_coords = barycentric_coords;
-					frag.perspective_barycentric_coords = barycentric_coords;// perspective_barycentric_coords;
-					(*pp_fragments)[(total_num_triangles_upto_current_bin * TILE_WIDTH * TILE_HEIGHT) + current_fragment_index++] = frag;
+					fragment_mask += (((u64)1) << (((y - min_bounds.y) << 3) + x - min_bounds.x)) * mask;
 				}
 			}
+			tile_info.fragment_mask = fragment_mask;
+			(*pp_fragments)[bin.num_triangles_upto + triangle_index] = tile_info;
 		}
-		//p_bin->num_fragments = current_fragment_index;
-		a_num_fragments[bin_index] = current_fragment_index;
-	}
-
-	for(int i = 0; i < NUM_BINS; ++i) {
-		a_bins[i].num_fragments = a_num_fragments[i];
 	}
 
 	rmt_EndCPUSample();
 }
 
 void run_pixel_shader_stage(const Fragment* p_fragments, u32 num_fragments) {
-	rmt_BeginCPUSample(pixel_shader_stage, 0);
-	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
-	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
-		Bin bin = a_bins[bin_index];
-		for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
-			Fragment *p_fragment = p_fragments + (bin.num_triangles_upto * TILE_WIDTH * TILE_HEIGHT) + frag_index;
-			v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
-			for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-				a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
-			}
+	//rmt_BeginCPUSample(pixel_shader_stage, 0);
+	//u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+	//for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+	//	Bin bin = a_bins[bin_index];
+	//	for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
+	//		Fragment *p_fragment = p_fragments + (bin.num_triangles_upto * TILE_WIDTH * TILE_HEIGHT) + frag_index;
+	//		v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
+	//		for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+	//			a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
+	//		}
 
-			// Early-Z Test
-			// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
-			f32 fragment_z = a_fragment_attributes[0].z;
-			const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
-			f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
-			if(*p_depth > fragment_z) {
-				continue;
-			}
-			*p_depth = fragment_z;
+	//		// Early-Z Test
+	//		// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+	//		f32 fragment_z = a_fragment_attributes[0].z;
+	//		const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
+	//		f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+	//		if(*p_depth > fragment_z) {
+	//			continue;
+	//		}
+	//		*p_depth = fragment_z;
 
-			// Pixel Shader
-			v4f32 fragment_out_color;
-			graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
-			// Output Merger
-			graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
-		}
-	}
-	rmt_EndCPUSample();
+	//		// Pixel Shader
+	//		v4f32 fragment_out_color;
+	//		graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
+	//		// Output Merger
+	//		graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+	//	}
+	//}
+	//rmt_EndCPUSample();
 }
 
-void run_pixel_shader_stage_omp(const Fragment* p_fragments, u32 num_fragments) {
+void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_triangles, const u32 num_triangles) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
+	
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
+	
 	#pragma omp parallel for schedule(dynamic)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 		Bin bin = a_bins[bin_index];
-		for(u32 frag_index = 0; frag_index < bin.num_fragments; ++frag_index) {
-			Fragment *p_fragment = p_fragments + (bin.num_triangles_upto * TILE_WIDTH * TILE_HEIGHT) + frag_index;
-			v4f32 a_fragment_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
-			for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-				a_fragment_attributes[attribute_index] = interpolate_attribute(p_fragment->p_attributes + attribute_index, attribute_index ? p_fragment->perspective_barycentric_coords : p_fragment->barycentric_coords, num_attibutes);
-			}
+		u32 a_tile_colors[64];
+		f32 a_tile_depths[64];
+		memset(&a_tile_colors, 0, sizeof(u32) * 64);
+		memset(&a_tile_depths, 0, sizeof(f32) * 64);
 
-			// Early-Z Test
-			// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
-			f32 fragment_z = a_fragment_attributes[0].z;
-			const fragment_linear_coordinate = p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x;
-			f32 *p_depth = &graphics_pipeline.om.p_depth[fragment_linear_coordinate];
-			if(*p_depth > fragment_z) {
-				continue;
-			}
-			*p_depth = fragment_z;
+		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+		for(u32 triangle_index = 0; triangle_index < bin.num_triangles_self; ++triangle_index) {
+			TileInfo tile_info = p_fragments[bin.num_triangles_upto + triangle_index];
+			if(tile_info.fragment_mask == 0) continue;
+			Triangle triangle = p_triangles[tile_info.triangle_id];
+			#pragma omp simd
+			for(u32 fragment_index = 0; fragment_index < 64; ++fragment_index) {
+				if(!((((u64)1)<<fragment_index) & tile_info.fragment_mask)) continue;
 
-			// Pixel Shader
-			v4f32 fragment_out_color;
-			graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
-			// Output Merger
-			graphics_pipeline.om.p_colors[p_fragment->coordinates.y*(i32)graphics_pipeline.rs.viewport.width + p_fragment->coordinates.x] = encode_color_as_u32(fragment_out_color.xyz);
+				i32 x = min_bounds.x + (fragment_index % 8);
+				i32 y = min_bounds.y + (fragment_index / 8);
+				i32 alpha = (triangle.setup.a_edge_functions[0].a * x + triangle.setup.a_edge_functions[0].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[0].c;
+				i32 beta = (triangle.setup.a_edge_functions[1].a * x + triangle.setup.a_edge_functions[1].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[1].c;
+				i32 gamma = (triangle.setup.a_edge_functions[2].a * x + triangle.setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[2].c;
+
+				v2f32 barycentric_coords = { (float)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area, (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area };
+				v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&triangle.setup, barycentric_coords);
+				
+				v4f32 a_fragment_attributes[3];
+				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+					a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
+				}
+
+				// Early-Z Test
+				// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+				f32 fragment_z = a_fragment_attributes[0].z;
+				const fragment_linear_coordinate = y*(i32)graphics_pipeline.rs.viewport.width + x;
+				f32 depth = a_tile_depths[fragment_index];
+				if(depth > fragment_z) {
+					continue;
+				}
+				a_tile_depths[fragment_index] = fragment_z;
+
+				// Pixel Shader
+				v4f32 fragment_out_color;
+				//graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
+				{
+					struct Ps_Input
+					{
+						float4 SV_POSITION;
+						float3 NORMAL;
+						float2 UV;
+						float _pad[3];
+					} ps_input;
+
+					struct Ps_Output
+					{
+						float4 SV_TARGET;
+					} ps_output;
+
+					typedef struct Ps_Input Ps_Input;
+					typedef struct Ps_Output Ps_Output;
+
+					const uint scene_tex_id = 0;
+					const uint env_tex_id = 1;
+
+					Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
+					Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
+					Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
+					Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
+
+					float3 normal = v3f32_normalize(p_in->NORMAL);
+					float4 tex_color = sample_2D(scene_tex, p_in->UV);
+					float4 irradiance = sample_2D_latlon(env_tex, normal);
+
+					p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+				}
+
+				// Output Merger
+				a_tile_colors[fragment_index] = encode_color_as_u32(fragment_out_color.xyz);
+			}
 		}
+		for(int j = 0; j < 8; ++j) {
+			for(int i = 0; i < 8; ++i) {
+				i32 x = min_bounds.x + i;
+				i32 y = min_bounds.y + j;
+				const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+				graphics_pipeline.om.p_colors[fragment_linear_coordinate] = a_tile_colors[j * 8 + i];
+				graphics_pipeline.om.p_depth[fragment_linear_coordinate] = a_tile_depths[j * 8 + i];
+			}
+		}
+
 	}
+
+	rmt_EndCPUSample();
+}
+
+void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles, const u32 num_triangles) {
+	rmt_BeginCPUSample(pixel_shader_stage, 0);
+
+	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
+
+
+#pragma omp parallel for schedule(dynamic)
+	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
+		Bin bin = a_bins[bin_index];
+		u32 a_tile_colors[64];
+		f32 a_tile_depths[64];
+		memset(&a_tile_colors, 0, sizeof(u32) * 64);
+		memset(&a_tile_depths, 0, sizeof(f32) * 64);
+
+		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+		for(u32 triangle_index = 0; triangle_index < bin.num_triangles_self; ++triangle_index) {
+			TileInfo tile_info = p_fragments[bin.num_triangles_upto + triangle_index];
+			if(tile_info.fragment_mask == 0) continue;
+			Triangle triangle = p_triangles[tile_info.triangle_id];
+
+
+			__m256i fragment_x_index = _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+			for(u32 fragment_y_index = 0; fragment_y_index < 8; ++fragment_y_index) {
+				fragment_x_index = _mm256_add_epi32(fragment_x_index, _mm256_set1_epi32(8));
+				
+				//if(!((((u64)1) << fragment_index) & tile_info.fragment_mask)) continue;
+				u8 mask = (tile_info.fragment_mask >> (8 * fragment_y_index)) & 0xFF;
+
+				//i32 x = min_bounds.x + (fragment_index % 8);
+				__m256i x = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.x), fragment_x_index);
+				//i32 y = min_bounds.y + (fragment_index / 8);
+				__m256i y = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.y), _mm256_set1_epi32(fragment_y_index));
+
+				//i32 alpha = (triangle.setup.a_edge_functions[0].a * x + triangle.setup.a_edge_functions[0].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[0].c;
+				__m256i alpha = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[0].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				__m256i temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[0].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
+				alpha = _mm256_add_epi32(alpha, temp);
+				alpha = _mm256_add_epi32(alpha, _mm256_set1_epi32(triangle.setup.a_edge_functions[0].c));
+
+				//i32 beta = (triangle.setup.a_edge_functions[1].a * x + triangle.setup.a_edge_functions[1].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[1].c;
+				__m256i beta = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
+				beta = _mm256_add_epi32(beta, temp);
+				beta = _mm256_add_epi32(beta, _mm256_set1_epi32(triangle.setup.a_edge_functions[1].c));
+
+				//i32 gamma = (triangle.setup.a_edge_functions[2].a * x + triangle.setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[2].c;
+				__m256i gamma = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
+				gamma = _mm256_add_epi32(gamma, temp);
+				gamma = _mm256_add_epi32(gamma, _mm256_set1_epi32(triangle.setup.a_edge_functions[2].c));
+				gamma = _mm256_s
+
+				v2f32 barycentric_coords = { (float)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area, (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area };
+				v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&triangle.setup, barycentric_coords);
+
+				v4f32 a_fragment_attributes[3];
+				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+					a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
+				}
+
+				// Early-Z Test
+				// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
+				f32 fragment_z = a_fragment_attributes[0].z;
+				const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+				f32 depth = a_tile_depths[fragment_index];
+				if(depth > fragment_z) {
+					continue;
+				}
+				a_tile_depths[fragment_index] = fragment_z;
+
+				// Pixel Shader
+				v4f32 fragment_out_color;
+				//graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
+				{
+					struct Ps_Input
+					{
+						float4 SV_POSITION;
+						float3 NORMAL;
+						float2 UV;
+						float _pad[3];
+					} ps_input;
+
+					struct Ps_Output
+					{
+						float4 SV_TARGET;
+					} ps_output;
+
+					typedef struct Ps_Input Ps_Input;
+					typedef struct Ps_Output Ps_Output;
+
+					const uint scene_tex_id = 0;
+					const uint env_tex_id = 1;
+
+					Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
+					Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
+					Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
+					Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
+
+					float3 normal = v3f32_normalize(p_in->NORMAL);
+					float4 tex_color = sample_2D(scene_tex, p_in->UV);
+					float4 irradiance = sample_2D_latlon(env_tex, normal);
+
+					p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+				}
+
+				// Output Merger
+				a_tile_colors[fragment_index] = encode_color_as_u32(fragment_out_color.xyz);
+			}
+		}
+		for(int j = 0; j < 8; ++j) {
+			for(int i = 0; i < 8; ++i) {
+				i32 x = min_bounds.x + i;
+				i32 y = min_bounds.y + j;
+				const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+				graphics_pipeline.om.p_colors[fragment_linear_coordinate] = a_tile_colors[j * 8 + i];
+				graphics_pipeline.om.p_depth[fragment_linear_coordinate] = a_tile_depths[j * 8 + i];
+			}
+		}
+
+	}
+
 	rmt_EndCPUSample();
 }
 
@@ -902,6 +1079,7 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	
 	u32 *p_triangle_ids = NULL;
 	run_binner(assembled_triangle_count, p_triangles, &max_possible_fragment_count, &p_triangle_ids);
+	//run_binner_omp(assembled_triangle_count, p_triangles, &max_possible_fragment_count, &p_triangle_ids);
 
 	Fragment *p_fragments = NULL;
 	u32 num_fragments;
@@ -909,7 +1087,7 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_rasterizer_omp(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
 
 	//run_pixel_shader_stage(p_fragments, num_fragments);
-	run_pixel_shader_stage_omp(p_fragments, num_fragments);
+	run_pixel_shader_stage_omp(p_fragments, p_triangles, assembled_triangle_count/8);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
@@ -996,8 +1174,8 @@ void init() {
 	{ // Load scene texture
 
 		OctarineImageHeader header;
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
-		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &test_tex.p_data);
+		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &scene_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		scene_tex.width = header.width;
@@ -1160,32 +1338,6 @@ void update() {
 	//sprintf(buf,"pos: %f, %f, %f --  yaw: %f -- pitch: %f \n", camera.pos.x, camera.pos.y, camera.pos.z, camera.yaw_rad, camera.pitch_rad);
 	//OutputDebugString(buf);
 
-	rmt_EndCPUSample();
-}
-
-static char* a_name_table[] = {
-	"enkiTS_00", "enkiTS_01", "enkiTS_02", "enkiTS_03", "enkiTS_04", "enkiTS_05", "enkiTS_06", "enkiTS_07", "enkiTS_08", "enkiTS_09",
-	"enkiTS_10", "enkiTS_11", "enkiTS_12", "enkiTS_13", "enkiTS_14", "enkiTS_15", "enkiTS_16", "enkiTS_17", "enkiTS_18", "enkiTS_19",
-	"enkiTS_20", "enkiTS_21", "enkiTS_22", "enkiTS_23", "enkiTS_24", "enkiTS_25", "enkiTS_26", "enkiTS_27", "enkiTS_28", "enkiTS_29",
-	"enkiTS_30", "enkiTS_31", "enkiTS_32", "enkiTS_33", "enkiTS_34", "enkiTS_35", "enkiTS_36", "enkiTS_37", "enkiTS_38", "enkiTS_39",
-	"enkiTS_40", "enkiTS_41", "enkiTS_42", "enkiTS_43", "enkiTS_44", "enkiTS_45", "enkiTS_46", "enkiTS_47", "enkiTS_48", "enkiTS_49",
-	"enkiTS_50", "enkiTS_51", "enkiTS_52", "enkiTS_53", "enkiTS_54", "enkiTS_55", "enkiTS_56", "enkiTS_57", "enkiTS_58", "enkiTS_59",
-	"enkiTS_60", "enkiTS_61", "enkiTS_62", "enkiTS_63", "enkiTS_64", "enkiTS_XX",
-};
-
-const size_t name_table_size = sizeof(a_name_table) / sizeof(const char*);
-
-void thread_start_callback(uint32_t threadnum_) {
-	uint32_t num_name = threadnum_;
-	if(num_name >= name_table_size) { num_name = name_table_size - 1; }
-	rmt_SetCurrentThreadName(a_name_table[num_name]);
-}
-
-void wait_start_callback(uint32_t threadnum_) {
-	rmt_BeginCPUSample(WAIT,0);
-}
-
-void wait_stop_callback(uint32_t threadnum_) {
 	rmt_EndCPUSample();
 }
 

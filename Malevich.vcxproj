@@ -42,7 +42,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\common_shader.h" />
-    <ClInclude Include="source\external\enkiTS\TaskScheduler_c.h" />
     <ClInclude Include="source\external\octarine\octarine_image.h" />
     <ClInclude Include="source\external\octarine\octarine_mesh.h" />
     <ClInclude Include="source\math.h" />
@@ -156,19 +155,19 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <Optimization>MaxSpeed</Optimization>
+      <Optimization>MaxSpeedHighLevel</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <CompileAs>CompileAsC</CompileAs>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <ExceptionHandling>false</ExceptionHandling>
       <Parallelization>false</Parallelization>
       <OpenMP>GenerateParallelCode</OpenMP>
       <OptimizationDiagnosticLevel>Level5</OptimizationDiagnosticLevel>
       <EmitOptimizationDiagnosticsToFile>true</EmitOptimizationDiagnosticsToFile>
-      <OptimizationDiagnosticPhase>Vectorization</OptimizationDiagnosticPhase>
+      <OptimizationDiagnosticPhase>All</OptimizationDiagnosticPhase>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>

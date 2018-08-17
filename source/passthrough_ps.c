@@ -29,6 +29,7 @@ void ps_main(const void *p_fragment_input_data, void *p_fragment_output_data, co
 	
 	p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance,tex_color),1.0/PI * 2);
 	//p_out->SV_TARGET = (float4) {normal.x, normal.y, normal.z, 1.0};
+	//p_out->SV_TARGET = (float4) {1, 1, 1, 1.0};
 }
 
 struct PixelShader passthrough_ps = { ps_main };
