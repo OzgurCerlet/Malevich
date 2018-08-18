@@ -852,9 +852,9 @@ void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_t
 			TileInfo tile_info = p_fragments[bin.num_triangles_upto + triangle_index];
 			if(tile_info.fragment_mask == 0) continue;
 			Triangle triangle = p_triangles[tile_info.triangle_id];
-			#pragma omp simd
+
 			for(u32 fragment_index = 0; fragment_index < 64; ++fragment_index) {
-				if(!((((u64)1)<<fragment_index) & tile_info.fragment_mask)) continue;
+				//if(!((((u64)1)<<fragment_index) & tile_info.fragment_mask)) continue;
 
 				i32 x = min_bounds.x + (fragment_index % 8);
 				i32 y = min_bounds.y + (fragment_index / 8);
@@ -869,6 +869,9 @@ void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_t
 				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
 					a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
 				}
+
+				a_fragment_attributes[1].w = barycentric_coords.x;
+				a_fragment_attributes[2].x = barycentric_coords.y;
 
 				// Early-Z Test
 				// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
@@ -908,11 +911,13 @@ void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_t
 					Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
 					Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
 
-					float3 normal = v3f32_normalize(p_in->NORMAL);
-					float4 tex_color = sample_2D(scene_tex, p_in->UV);
-					float4 irradiance = sample_2D_latlon(env_tex, normal);
+					//float3 normal = v3f32_normalize(p_in->NORMAL);
+					//float4 tex_color = sample_2D(scene_tex, p_in->UV);
+					//float4 irradiance = sample_2D_latlon(env_tex, normal);
 
-					p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+					//p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+					float z = p_in->SV_POSITION.z * 100;
+					p_out->SV_TARGET = (float4) { z, z, z, 1.0 };
 				}
 
 				// Output Merger
@@ -939,7 +944,6 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
 
-
 #pragma omp parallel for schedule(dynamic)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 		Bin bin = a_bins[bin_index];
@@ -954,58 +958,115 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 			if(tile_info.fragment_mask == 0) continue;
 			Triangle triangle = p_triangles[tile_info.triangle_id];
 
-
 			__m256i fragment_x_index = _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 			for(u32 fragment_y_index = 0; fragment_y_index < 8; ++fragment_y_index) {
-				fragment_x_index = _mm256_add_epi32(fragment_x_index, _mm256_set1_epi32(8));
-				
+						
 				//if(!((((u64)1) << fragment_index) & tile_info.fragment_mask)) continue;
-				u8 mask = (tile_info.fragment_mask >> (8 * fragment_y_index)) & 0xFF;
+				u8 mask_8 = (tile_info.fragment_mask >> (8 * fragment_y_index)) & 0xFF;
+				//if(mask_8 == 0) continue;
+				__m256i mask = _mm256_setr_epi32(
+					0xFFFFFFFF * (mask_8 & 1), 0xFFFFFFFF * ((mask_8 >> 1) & 1), 0xFFFFFFFF * ((mask_8 >> 2) & 1), 0xFFFFFFFF * ((mask_8 >> 3) & 1),
+					0xFFFFFFFF * ((mask_8 >> 4) & 1), 0xFFFFFFFF * ((mask_8 >> 5) & 1), 0xFFFFFFFF * ((mask_8 >> 6) & 1), 0xFFFFFFFF * ((mask_8 >> 7) & 1)
+				);
 
 				//i32 x = min_bounds.x + (fragment_index % 8);
 				__m256i x = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.x), fragment_x_index);
 				//i32 y = min_bounds.y + (fragment_index / 8);
 				__m256i y = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.y), _mm256_set1_epi32(fragment_y_index));
 
+				// ASSUMPTION(Cerlet): 32 bit precision is enough for the fixed point representations of barycentric coordinates
 				//i32 alpha = (triangle.setup.a_edge_functions[0].a * x + triangle.setup.a_edge_functions[0].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[0].c;
 				__m256i alpha = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[0].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
-				__m256i temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[0].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
-				alpha = _mm256_add_epi32(alpha, temp);
+				alpha = _mm256_add_epi32(alpha, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[0].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				alpha = _mm256_add_epi32(alpha, _mm256_set1_epi32(triangle.setup.a_edge_functions[0].c));
 
 				//i32 beta = (triangle.setup.a_edge_functions[1].a * x + triangle.setup.a_edge_functions[1].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[1].c;
+				//f32 barycentric_coords_x = (f32)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
 				__m256i beta = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
-				temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
-				beta = _mm256_add_epi32(beta, temp);
+				beta = _mm256_add_epi32(beta, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				beta = _mm256_add_epi32(beta, _mm256_set1_epi32(triangle.setup.a_edge_functions[1].c));
-
+				beta = _mm256_srli_epi32(beta, NUM_SUB_PIXEL_PRECISION_BITS * 2);
+				__m256 barycentric_coords_x = _mm256_mul_ps(_mm256_cvtepi32_ps(beta), _mm256_set1_ps(triangle.setup.one_over_area));
+			
 				//i32 gamma = (triangle.setup.a_edge_functions[2].a * x + triangle.setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[2].c;
+				//f32 barycentric_coords_y = (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area;
 				__m256i gamma = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
-				temp = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS);
-				gamma = _mm256_add_epi32(gamma, temp);
+				gamma = _mm256_add_epi32(gamma, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				gamma = _mm256_add_epi32(gamma, _mm256_set1_epi32(triangle.setup.a_edge_functions[2].c));
-				gamma = _mm256_s
+				gamma = _mm256_srli_epi32(gamma, NUM_SUB_PIXEL_PRECISION_BITS * 2);
+				__m256 barycentric_coords_y = _mm256_mul_ps(_mm256_cvtepi32_ps(gamma), _mm256_set1_ps(triangle.setup.one_over_area));
 
-				v2f32 barycentric_coords = { (float)(beta >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area, (float)(gamma >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * triangle.setup.one_over_area };
-				v2f32 perspective_barycentric_coords = compute_perspective_barycentric_coords(&triangle.setup, barycentric_coords);
+				// f32 denom = (1.0 - u_bary - v_bary) * p_setup->a_reciprocal_ws[0] + u_bary * p_setup->a_reciprocal_ws[1] + v_bary * p_setup->a_reciprocal_ws[2];
+				// denom = 1.0 / denom;
+				__m256 denom = _mm256_sub_ps(_mm256_set1_ps(1.0), _mm256_add_ps(barycentric_coords_x, barycentric_coords_y));
+				denom = _mm256_mul_ps(denom, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[0]));
+				denom = _mm256_add_ps(denom, _mm256_mul_ps(barycentric_coords_x, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[1])));
+				denom = _mm256_add_ps(denom, _mm256_mul_ps(barycentric_coords_y, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[2])));
+				denom = _mm256_div_ps(_mm256_set1_ps(1.0), denom);
+				
+				// f32 perspective_barycentric_coords.x = barycentric_coords_x * p_setup->a_reciprocal_ws[1] * denom;
+				__m256 perspective_barycentric_coords_x = _mm256_mul_ps(_mm256_mul_ps(barycentric_coords_x, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[1])), denom);
+				// f32 perspective_barycentric_coords.y = barycentric_coords_y * p_setup->a_reciprocal_ws[2] * denom;
+				__m256 perspective_barycentric_coords_y = _mm256_mul_ps(_mm256_mul_ps(barycentric_coords_y, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[2])), denom);
 
-				v4f32 a_fragment_attributes[3];
+				//v4f32 a_fragment_attributes[3];
+				//for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+				//	a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
+				//}
+
+				__m256 a_fragment_attributes[12];
 				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-					a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
+					v4f32 v0_attribute = triangle.p_attributes[attribute_index];
+					v4f32 v1_attribute = triangle.p_attributes[attribute_index + 3];
+					v4f32 v2_attribute = triangle.p_attributes[attribute_index + 6]; 
+
+					__m256 v0_attribute_x = _mm256_set1_ps(v0_attribute.x);
+					__m256 v1_attribute_x = _mm256_set1_ps(v1_attribute.x);
+					__m256 v2_attribute_x = _mm256_set1_ps(v2_attribute.x);
+					v0_attribute_x = _mm256_add_ps(v0_attribute_x, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_x, v0_attribute_x), barycentric_coords_x));
+					v0_attribute_x = _mm256_add_ps(v0_attribute_x, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_x, v0_attribute_x), barycentric_coords_y));
+
+					__m256 v0_attribute_y = _mm256_set1_ps(v0_attribute.y);
+					__m256 v1_attribute_y = _mm256_set1_ps(v1_attribute.y);
+					__m256 v2_attribute_y = _mm256_set1_ps(v2_attribute.y);
+					v0_attribute_y = _mm256_add_ps(v0_attribute_y, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_y, v0_attribute_y), barycentric_coords_x));
+					v0_attribute_y = _mm256_add_ps(v0_attribute_y, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_y, v0_attribute_y), barycentric_coords_y));
+
+					__m256 v0_attribute_z = _mm256_set1_ps(v0_attribute.z);
+					__m256 v1_attribute_z = _mm256_set1_ps(v1_attribute.z);
+					__m256 v2_attribute_z = _mm256_set1_ps(v2_attribute.z);
+					v0_attribute_z = _mm256_add_ps(v0_attribute_z, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_z, v0_attribute_z), barycentric_coords_x));
+					v0_attribute_z = _mm256_add_ps(v0_attribute_z, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_z, v0_attribute_z), barycentric_coords_y));
+
+					__m256 v0_attribute_w = _mm256_set1_ps(v0_attribute.w);
+					__m256 v1_attribute_w = _mm256_set1_ps(v1_attribute.w);
+					__m256 v2_attribute_w = _mm256_set1_ps(v2_attribute.w);
+					v0_attribute_w = _mm256_add_ps(v0_attribute_w, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_w, v0_attribute_w), barycentric_coords_x));
+					v0_attribute_w = _mm256_add_ps(v0_attribute_w, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_w, v0_attribute_w), barycentric_coords_y));
+					
+					a_fragment_attributes[attribute_index * 4 + 0] = v0_attribute_x;
+					a_fragment_attributes[attribute_index * 4 + 1] = v0_attribute_y;
+					a_fragment_attributes[attribute_index * 4 + 2] = v0_attribute_z;
+					a_fragment_attributes[attribute_index * 4 + 3] = v0_attribute_w;
 				}
 
 				// Early-Z Test
 				// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
-				f32 fragment_z = a_fragment_attributes[0].z;
-				const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-				f32 depth = a_tile_depths[fragment_index];
-				if(depth > fragment_z) {
-					continue;
-				}
-				a_tile_depths[fragment_index] = fragment_z;
+				//f32 fragment_z = a_fragment_attributes[0].z;
+				//const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+				//f32 depth = a_tile_depths[fragment_index];
+				//if(depth > fragment_z) {
+				//	continue;
+				//}
+
+				__m256 fragment_z = a_fragment_attributes[2];
+				__m256 depth = _mm256_load_ps(a_tile_depths + fragment_y_index*8);
+				__m256 depth_test = _mm256_cmp_ps(fragment_z, depth, _CMP_GT_OQ);
+				mask = _mm256_and_si256(_mm256_castps_si256(depth_test), mask);
+				//if(_mm256_testz_si256(mask, mask) == 1) continue;
 
 				// Pixel Shader
-				v4f32 fragment_out_color;
+				__m256 fragment_out_color[4];
 				//graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
 				{
 					struct Ps_Input
@@ -1024,23 +1085,40 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 					typedef struct Ps_Input Ps_Input;
 					typedef struct Ps_Output Ps_Output;
 
-					const uint scene_tex_id = 0;
-					const uint env_tex_id = 1;
+					//const uint scene_tex_id = 0;
+					//const uint env_tex_id = 1;
 
-					Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
-					Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
-					Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
-					Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
+					//Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
+					//Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
+					//Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
+					//Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
 
-					float3 normal = v3f32_normalize(p_in->NORMAL);
-					float4 tex_color = sample_2D(scene_tex, p_in->UV);
-					float4 irradiance = sample_2D_latlon(env_tex, normal);
+					//float3 normal = v3f32_normalize(p_in->NORMAL);
+					//float4 tex_color = sample_2D(scene_tex, p_in->UV);
+					
+					__m256 tex_coord_u = a_fragment_attributes[7];
+					__m256 tex_coord_v = a_fragment_attributes[8];
 
-					p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+					__m256 z = _mm256_mul_ps(fragment_z, _mm256_set1_ps(100.0));
+
+					fragment_out_color[0] = z;
+					fragment_out_color[1] = z;
+					fragment_out_color[2] = z;
+					fragment_out_color[3] = _mm256_set1_ps(1.0);
+					//float4 irradiance = sample_2D_latlon(env_tex, normal);
+					//p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
 				}
 
 				// Output Merger
-				a_tile_colors[fragment_index] = encode_color_as_u32(fragment_out_color.xyz);
+				// (((u32)(color.x*255.f)) << 16) + (((u32)(color.y*255.f)) << 8) + (((u32)(color.z*255.f)));
+				__m256i encoded_color = _mm256_slli_epi32(_mm256_cvtps_epi32(_mm256_mul_ps(fragment_out_color[0], _mm256_set1_ps(255.0))), 16); // r
+				encoded_color = _mm256_add_epi32(encoded_color, _mm256_slli_epi32(_mm256_cvtps_epi32(_mm256_mul_ps(fragment_out_color[1], _mm256_set1_ps(255.0))), 8)); // r+g
+				encoded_color = _mm256_add_epi32(encoded_color, _mm256_cvtps_epi32(_mm256_mul_ps(fragment_out_color[2], _mm256_set1_ps(255.0)))); // r+g+b
+
+				_mm256_maskstore_epi32(a_tile_colors + fragment_y_index * 8, mask, encoded_color);
+				_mm256_maskstore_ps(a_tile_depths + fragment_y_index * 8, mask, fragment_z);
+				__m256 test = _mm256_load_ps(a_tile_depths + fragment_y_index * 8);
+				__m256 zero = _mm256_set1_ps(0.0);
 			}
 		}
 		for(int j = 0; j < 8; ++j) {
@@ -1088,6 +1166,7 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 
 	//run_pixel_shader_stage(p_fragments, num_fragments);
 	run_pixel_shader_stage_omp(p_fragments, p_triangles, assembled_triangle_count/8);
+	//run_pixel_shader_stage_omp_simd(p_fragments, p_triangles, assembled_triangle_count / 8);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
