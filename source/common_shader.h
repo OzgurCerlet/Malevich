@@ -29,17 +29,53 @@ inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
 
 	int s = (int)(tex.width * tex_coord.x - 0.5);
 	int t = (int)(tex.height * tex_coord.y - 0.5);
-	uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
-	return decode_u32_as_color(texel);
-	return (float4) { tex_coord.x, tex_coord.y, 1, 1 };
+	//uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
+	//return decode_u32_as_color(texel);
+
+	float4 texel = *(((float4*)tex.p_data) + t * tex.width + s);
+
+	return texel;
+}
+
+inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
+	v4f256 result;
+	v4f32 a_texels[8];
+	f32 a_u_s[8];
+	f32 a_v_s[8];
+	for(i32 i = 0; i < 8; ++i) {
+		if(!mask.m256i_i32[i]) continue;
+		_mm256_store_ps(a_u_s, tex_coord.x);
+		_mm256_store_ps(a_v_s, tex_coord.y);
+		if(a_u_s[i] < 0.0 || a_u_s[i] > 1.0) {
+			a_u_s[i] = 0;
+		}
+		if(a_v_s[i] < 0.0 || a_v_s[i] > 1.0) {
+			a_v_s[i] = 0;
+		}
+
+		int s = (int)(tex.width * a_u_s[i] - 0.5);
+		int t = (int)(tex.height * a_v_s[i] - 0.5);
+		uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
+		a_texels[i] = decode_u32_as_color(texel);	
+	}
+	
+	const i256 offset = _mm256_set_epi32(
+		sizeof(v4f32)*7, sizeof(v4f32) * 6, sizeof(v4f32) * 5, sizeof(v4f32) * 4, 
+		sizeof(v4f32) * 3, sizeof(v4f32) * 2, sizeof(v4f32) * 1, 0);
+	
+	result.x = _mm256_i32gather_ps(((f32*)a_texels), offset, 1);
+	result.y = _mm256_i32gather_ps(((f32*)a_texels) + 1, offset, 1);
+	result.z = _mm256_i32gather_ps(((f32*)a_texels) + 2, offset, 1);
+	result.w = _mm256_i32gather_ps(((f32*)a_texels) + 3, offset, 1);
+
+	return result;
+
 }
 
 inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {
 	f32 cos_theta = v3f32_dot((float3) { 0, 0, 1 }, dir);
 	if(abs(cos_theta) == 1) return sample_2D(tex, (float2) { 0, 0 });
 	
-	f32 uv_y = acos(cos_theta)/PI;
-
 	f32 cos_x = v3f32_dot((float3) { 1, 0, 0 }, v3f32_normalize((float3) { dir.x, dir.y, 0.0 }));
 	f32 cos_y = v3f32_dot((float3) { 0, 1, 0 }, v3f32_normalize((float3) { dir.x, dir.y, 0.0 }));
 
@@ -50,6 +86,10 @@ inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {
 	else {
 		uv_x = 1.0 - acos(cos_x) / PI;
 	}
+
+
+
+	f32 uv_y = acos(cos_theta) / PI;
 
 	return sample_2D(tex, (float2) { uv_x, uv_y });
 

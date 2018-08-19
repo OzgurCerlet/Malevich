@@ -12,8 +12,11 @@ typedef int8_t		i8;
 typedef int16_t		i16;
 typedef int32_t		i32;
 typedef int64_t		i64;
+typedef __m256i		i256;
 typedef float		f32;
 typedef double		f64;
+typedef __m256		f256;
+
 
 #ifndef MIN
 	#define MIN(x,y) ((x<y)?(x):(y))
@@ -40,6 +43,15 @@ typedef struct v2f32
 	};
 } v2f32;
 
+typedef struct v2f256{
+	union {
+		f256 xy[2];
+		struct{
+			f256 x, y;
+		};
+	};
+} v2f256;
+
 typedef struct v2i32
 {
 	union
@@ -61,6 +73,15 @@ typedef struct v3f32 {
 	};
 } v3f32;
 
+typedef struct v3f256{
+	union {
+		f256 xyz[3];
+		struct{
+			f256 x, y, z;
+		};
+	};
+} v3f256;
+
 typedef struct v4f32 {
 	union {
 		f32 xyzw[4];
@@ -72,6 +93,18 @@ typedef struct v4f32 {
 		};
 	};
 } v4f32;
+
+typedef struct v4f256{
+	union {
+		f256 xyzw[4];
+		struct {
+			f256 x, y, z, w;
+		};
+		struct {
+			v3f256 xyz;
+		};
+	};
+} v4f256;
 
 typedef struct m4x4f32 {
 	union{
@@ -104,6 +137,12 @@ inline f32 v4f32_dot(v4f32 v0, v4f32 v1) {
 
 inline f32 v3f32_dot(v3f32 v0, v3f32 v1) {
 	f32 result = v0.x * v1.x + v0.y * v1.y + v0.z * v1.z;
+	return result;
+}
+
+inline f256 v3f256_dot(v3f256 v0, v3f256 v1) {
+	f256 result = _mm256_add_ps(_mm256_mul_ps(v0.x, v1.x), _mm256_mul_ps(v0.y, v1.y));
+	result = _mm256_add_ps(result, _mm256_mul_ps(v0.z, v1.z));
 	return result;
 }
 
@@ -152,6 +191,11 @@ inline v3f32 v3f32_mul_f32(v3f32 v, f32 c) {
 	return result;
 }
 
+inline v3f256 v3f256_mul_f256(v3f256 v, f256 c) {
+	v3f256 result = { _mm256_mul_ps(v.x, c), _mm256_mul_ps(v.y, c), _mm256_mul_ps(v.z, c) };
+	return result;
+}
+
 inline v4f32 v4f32_add_v4f32(v4f32 v0, v4f32 v1) {
 	v4f32 result = { v0.x + v1.x, v0.y + v1.y, v0.z + v1.z, v0.w + v1.w };
 	return result;
@@ -188,6 +232,11 @@ inline v4f32 v4f32_normalize(v4f32 v) {
 inline v3f32 v3f32_normalize(v3f32 v) {
 	f32 one_over_length = 1.0 / v3f32_length(v);
 	return v3f32_mul_f32(v, one_over_length);
+}
+
+inline v3f256 v3f256_normalize(v3f256 v) {
+	f256 one_over_length = _mm256_rsqrt_ps(v3f256_dot(v, v));
+	return v3f256_mul_f256(v, one_over_length);
 }
 
 inline f32 m4x4f32_determinant(const m4x4f32* M)
@@ -240,5 +289,20 @@ inline v4f32 decode_u32_as_color(u32 encoded_color) {
 	result.z = ((encoded_color & 0x00'FF'00'00) >> 16) / 255.0f;
 	result.y = ((encoded_color & 0x00'00'FF'00) >> 8)/ 255.0f;
 	result.x = (encoded_color & 0x00'00'00'FF) / 255.0f;
+	return result;
+}
+
+inline v3f32 v3f32_exp(v3f32 v) {
+	v3f32 result = { exp(v.x), exp(v.y), exp(v.z) };
+	return result;
+}
+
+inline v3f32 v3f32_sub_v3f32(v3f32 v0, v3f32 v1) {
+	v3f32 result = { v0.x - v1.x, v0.y - v1.y, v0.z - v1.z };
+	return result;
+}
+
+inline v3f32 v3f32_pow(v3f32 v, f32 p) {
+	v3f32 result = { pow(v.x,p), pow(v.y,p), pow(v.z,p) };
 	return result;
 }

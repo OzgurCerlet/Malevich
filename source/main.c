@@ -25,6 +25,7 @@ typedef int DXGI_FORMAT;
 #define TILE_HEIGHT 8 //1000;
 
 #define VECTOR_WIDTH 8
+#define TRIANGLE_COUNT_FACTOR 1
 
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
@@ -70,9 +71,10 @@ typedef struct IA {
 } IA;
 
 typedef struct VS {
-	void (*shader)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, u32 vertex_id);
+	void (*shader)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, const void *p_shader_resource_views, u32 vertex_id);
 	u8 output_register_count;
 	void *p_constant_buffers[COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT];
+	void *p_shader_resource_views[COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT];
 } VS;
 
 typedef struct Viewport {
@@ -402,7 +404,7 @@ void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data,
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
 	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
 	for(u32 vertex_id = 0; vertex_id < vertex_count; ++vertex_id) {
-		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, vertex_id);
+		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, graphics_pipeline.vs.p_shader_resource_views, vertex_id);
 	}
 	*p_per_vertex_output_data_size = per_vertex_output_data_size;
 	*pp_vertex_output_data = p_vertex_output_data;
@@ -582,24 +584,13 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			}; // degenerate triangle ?
 
 			// face culling with winding order
-			//if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+			if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
 
 			Setup setup;
 			set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
 			set_edge_function(&setup.a_edge_functions[0], signed_area, x[1], y[1], x[2], y[2]);
 			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 
-			//i32 a = y0 - y1;
-			//i32 b = x1 - x0;
-			//if(signed_area < 0) {
-			//	a = -a;
-			//	b = -b;
-			//}
-			//i32 c = -a * x0 - b * y0;
-
-			//p_edge->a = a;
-			//p_edge->b = b;
-			//p_edge->c = c;
 			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
 			if(signed_area_f32 == 0) {
 					DebugBreak();
@@ -651,7 +642,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_max_possible_fragment_count, u32 **pp_triangle_ids ) {
 	rmt_BeginCPUSample(binner, 0);
 	
-	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / 8;
+	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / TRIANGLE_COUNT_FACTOR;
 	*pp_triangle_ids =  malloc(sizeof(u32) * assumed_max_num_triangles_per_bin * NUM_BINS);
 
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
@@ -768,7 +759,7 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, TileInfo **pp_fragments) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 	
-	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / 8;
+	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / TRIANGLE_COUNT_FACTOR;
 	*pp_fragments = malloc(32 * NUM_BINS * sizeof(TileInfo));
 
 	#pragma omp parallel for schedule(dynamic)
@@ -854,7 +845,7 @@ void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_t
 			Triangle triangle = p_triangles[tile_info.triangle_id];
 
 			for(u32 fragment_index = 0; fragment_index < 64; ++fragment_index) {
-				//if(!((((u64)1)<<fragment_index) & tile_info.fragment_mask)) continue;
+				if(!((((u64)1)<<fragment_index) & tile_info.fragment_mask)) continue;
 
 				i32 x = min_bounds.x + (fragment_index % 8);
 				i32 y = min_bounds.y + (fragment_index / 8);
@@ -985,7 +976,7 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 				__m256i beta = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
 				beta = _mm256_add_epi32(beta, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[1].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				beta = _mm256_add_epi32(beta, _mm256_set1_epi32(triangle.setup.a_edge_functions[1].c));
-				beta = _mm256_srli_epi32(beta, NUM_SUB_PIXEL_PRECISION_BITS * 2);
+				beta = _mm256_srai_epi32(beta, NUM_SUB_PIXEL_PRECISION_BITS * 2);
 				__m256 barycentric_coords_x = _mm256_mul_ps(_mm256_cvtepi32_ps(beta), _mm256_set1_ps(triangle.setup.one_over_area));
 			
 				//i32 gamma = (triangle.setup.a_edge_functions[2].a * x + triangle.setup.a_edge_functions[2].b *y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + triangle.setup.a_edge_functions[2].c;
@@ -993,7 +984,8 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 				__m256i gamma = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
 				gamma = _mm256_add_epi32(gamma, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(triangle.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				gamma = _mm256_add_epi32(gamma, _mm256_set1_epi32(triangle.setup.a_edge_functions[2].c));
-				gamma = _mm256_srli_epi32(gamma, NUM_SUB_PIXEL_PRECISION_BITS * 2);
+				//gamma = _mm256_srli_epi32(gamma, NUM_SUB_PIXEL_PRECISION_BITS * 2);
+				gamma = _mm256_srai_epi32(gamma, NUM_SUB_PIXEL_PRECISION_BITS * 2);
 				__m256 barycentric_coords_y = _mm256_mul_ps(_mm256_cvtepi32_ps(gamma), _mm256_set1_ps(triangle.setup.one_over_area));
 
 				// f32 denom = (1.0 - u_bary - v_bary) * p_setup->a_reciprocal_ws[0] + u_bary * p_setup->a_reciprocal_ws[1] + v_bary * p_setup->a_reciprocal_ws[2];
@@ -1016,6 +1008,11 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 				__m256 a_fragment_attributes[12];
 				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
+					if(attribute_index > 0) {
+						barycentric_coords_x = perspective_barycentric_coords_x;
+						barycentric_coords_y = perspective_barycentric_coords_y;
+					}
+
 					v4f32 v0_attribute = triangle.p_attributes[attribute_index];
 					v4f32 v1_attribute = triangle.p_attributes[attribute_index + 3];
 					v4f32 v2_attribute = triangle.p_attributes[attribute_index + 6]; 
@@ -1023,31 +1020,31 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 					__m256 v0_attribute_x = _mm256_set1_ps(v0_attribute.x);
 					__m256 v1_attribute_x = _mm256_set1_ps(v1_attribute.x);
 					__m256 v2_attribute_x = _mm256_set1_ps(v2_attribute.x);
-					v0_attribute_x = _mm256_add_ps(v0_attribute_x, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_x, v0_attribute_x), barycentric_coords_x));
-					v0_attribute_x = _mm256_add_ps(v0_attribute_x, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_x, v0_attribute_x), barycentric_coords_y));
+					__m256 temp_x = _mm256_add_ps(v0_attribute_x, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_x, v0_attribute_x), barycentric_coords_x));
+					temp_x = _mm256_add_ps(temp_x, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_x, v0_attribute_x), barycentric_coords_y));
 
 					__m256 v0_attribute_y = _mm256_set1_ps(v0_attribute.y);
 					__m256 v1_attribute_y = _mm256_set1_ps(v1_attribute.y);
 					__m256 v2_attribute_y = _mm256_set1_ps(v2_attribute.y);
-					v0_attribute_y = _mm256_add_ps(v0_attribute_y, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_y, v0_attribute_y), barycentric_coords_x));
-					v0_attribute_y = _mm256_add_ps(v0_attribute_y, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_y, v0_attribute_y), barycentric_coords_y));
+					__m256 temp_y = _mm256_add_ps(v0_attribute_y, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_y, v0_attribute_y), barycentric_coords_x));
+					temp_y = _mm256_add_ps(temp_y, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_y, v0_attribute_y), barycentric_coords_y));
 
 					__m256 v0_attribute_z = _mm256_set1_ps(v0_attribute.z);
 					__m256 v1_attribute_z = _mm256_set1_ps(v1_attribute.z);
 					__m256 v2_attribute_z = _mm256_set1_ps(v2_attribute.z);
-					v0_attribute_z = _mm256_add_ps(v0_attribute_z, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_z, v0_attribute_z), barycentric_coords_x));
-					v0_attribute_z = _mm256_add_ps(v0_attribute_z, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_z, v0_attribute_z), barycentric_coords_y));
+					__m256 temp_z = _mm256_add_ps(v0_attribute_z, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_z, v0_attribute_z), barycentric_coords_x));
+					temp_z = _mm256_add_ps(temp_z, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_z, v0_attribute_z), barycentric_coords_y));
 
 					__m256 v0_attribute_w = _mm256_set1_ps(v0_attribute.w);
 					__m256 v1_attribute_w = _mm256_set1_ps(v1_attribute.w);
 					__m256 v2_attribute_w = _mm256_set1_ps(v2_attribute.w);
-					v0_attribute_w = _mm256_add_ps(v0_attribute_w, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_w, v0_attribute_w), barycentric_coords_x));
-					v0_attribute_w = _mm256_add_ps(v0_attribute_w, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_w, v0_attribute_w), barycentric_coords_y));
+					__m256 temp_w = _mm256_add_ps(v0_attribute_w, _mm256_mul_ps(_mm256_sub_ps(v1_attribute_w, v0_attribute_w), barycentric_coords_x));
+					temp_w = _mm256_add_ps(temp_w, _mm256_mul_ps(_mm256_sub_ps(v2_attribute_w, v0_attribute_w), barycentric_coords_y));
 					
-					a_fragment_attributes[attribute_index * 4 + 0] = v0_attribute_x;
-					a_fragment_attributes[attribute_index * 4 + 1] = v0_attribute_y;
-					a_fragment_attributes[attribute_index * 4 + 2] = v0_attribute_z;
-					a_fragment_attributes[attribute_index * 4 + 3] = v0_attribute_w;
+					a_fragment_attributes[attribute_index * 4 + 0] = temp_x;
+					a_fragment_attributes[attribute_index * 4 + 1] = temp_y;
+					a_fragment_attributes[attribute_index * 4 + 2] = temp_z;
+					a_fragment_attributes[attribute_index * 4 + 3] = temp_w;
 				}
 
 				// Early-Z Test
@@ -1061,53 +1058,54 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 				__m256 fragment_z = a_fragment_attributes[2];
 				__m256 depth = _mm256_load_ps(a_tile_depths + fragment_y_index*8);
-				__m256 depth_test = _mm256_cmp_ps(fragment_z, depth, _CMP_GT_OQ);
+				__m256 depth_test = _mm256_cmp_ps(fragment_z, depth, _CMP_GE_OQ);
 				mask = _mm256_and_si256(_mm256_castps_si256(depth_test), mask);
-				//if(_mm256_testz_si256(mask, mask) == 1) continue;
+				if(_mm256_testz_si256(mask, mask) == 1) continue;
 
 				// Pixel Shader
 				__m256 fragment_out_color[4];
-				//graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views);
-				{
-					struct Ps_Input
-					{
-						float4 SV_POSITION;
-						float3 NORMAL;
-						float2 UV;
-						float _pad[3];
-					} ps_input;
+				graphics_pipeline.ps.shader(a_fragment_attributes, (void*)&fragment_out_color, graphics_pipeline.ps.p_shader_resource_views, mask);
+				//
+				//{
+				//	struct Ps_Input
+				//	{
+				//		float4 SV_POSITION;
+				//		float3 NORMAL;
+				//		float2 UV;
+				//		float _pad[3];
+				//	} ps_input;
 
-					struct Ps_Output
-					{
-						float4 SV_TARGET;
-					} ps_output;
+				//	struct Ps_Output
+				//	{
+				//		float4 SV_TARGET;
+				//	} ps_output;
 
-					typedef struct Ps_Input Ps_Input;
-					typedef struct Ps_Output Ps_Output;
+				//	typedef struct Ps_Input Ps_Input;
+				//	typedef struct Ps_Output Ps_Output;
 
-					//const uint scene_tex_id = 0;
-					//const uint env_tex_id = 1;
+				//	//const uint scene_tex_id = 0;
+				//	//const uint env_tex_id = 1;
 
-					//Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
-					//Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
-					//Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
-					//Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
+				//	//Ps_Input *p_in = (Ps_Input*)a_fragment_attributes;
+				//	//Ps_Output *p_out = (Ps_Output*)(&fragment_out_color);
+				//	//Texture2D scene_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[scene_tex_id]);
+				//	//Texture2D env_tex = *((Texture2D*)graphics_pipeline.ps.p_shader_resource_views[env_tex_id]);
 
-					//float3 normal = v3f32_normalize(p_in->NORMAL);
-					//float4 tex_color = sample_2D(scene_tex, p_in->UV);
-					
-					__m256 tex_coord_u = a_fragment_attributes[7];
-					__m256 tex_coord_v = a_fragment_attributes[8];
+				//	//float3 normal = v3f32_normalize(p_in->NORMAL);
+				//	float4 tex_color = sample_2D(scene_tex, p_in->UV);
+				//	
+				//	__m256 tex_coord_u = a_fragment_attributes[7];
+				//	__m256 tex_coord_v = a_fragment_attributes[8];
 
-					__m256 z = _mm256_mul_ps(fragment_z, _mm256_set1_ps(100.0));
+				//	__m256 z = _mm256_mul_ps(fragment_z, _mm256_set1_ps(100.0));
 
-					fragment_out_color[0] = z;
-					fragment_out_color[1] = z;
-					fragment_out_color[2] = z;
-					fragment_out_color[3] = _mm256_set1_ps(1.0);
-					//float4 irradiance = sample_2D_latlon(env_tex, normal);
-					//p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
-				}
+				//	fragment_out_color[0] = tex_coord_u;
+				//	fragment_out_color[1] = tex_coord_v;
+				//	fragment_out_color[2] = _mm256_set1_ps(0.0);
+				//	fragment_out_color[3] = _mm256_set1_ps(1.0);
+				//	//float4 irradiance = sample_2D_latlon(env_tex, normal);
+				//	//p_out->SV_TARGET = v4f32_mul_f32(v4f32_mul_v4f32(irradiance, tex_color), 1.0 / PI * 2);
+				//}
 
 				// Output Merger
 				// (((u32)(color.x*255.f)) << 16) + (((u32)(color.y*255.f)) << 8) + (((u32)(color.z*255.f)));
@@ -1117,10 +1115,9 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 				_mm256_maskstore_epi32(a_tile_colors + fragment_y_index * 8, mask, encoded_color);
 				_mm256_maskstore_ps(a_tile_depths + fragment_y_index * 8, mask, fragment_z);
-				__m256 test = _mm256_load_ps(a_tile_depths + fragment_y_index * 8);
-				__m256 zero = _mm256_set1_ps(0.0);
 			}
 		}
+
 		for(int j = 0; j < 8; ++j) {
 			for(int i = 0; i < 8; ++i) {
 				i32 x = min_bounds.x + i;
@@ -1165,8 +1162,8 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_rasterizer_omp(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
 
 	//run_pixel_shader_stage(p_fragments, num_fragments);
-	run_pixel_shader_stage_omp(p_fragments, p_triangles, assembled_triangle_count/8);
-	//run_pixel_shader_stage_omp_simd(p_fragments, p_triangles, assembled_triangle_count / 8);
+	//run_pixel_shader_stage_omp(p_fragments, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
+	run_pixel_shader_stage_omp_simd(p_fragments, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
@@ -1204,11 +1201,12 @@ void render() {
 	rmt_BeginCPUSample(render, 0);
 	graphics_pipeline.ia.input_layout = transform_vs.in_vertex_size;
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;// suprematist_index_buffer;
-	graphics_pipeline.ia.p_vertex_buffer = test_mesh.p_vertex_buffer;// suprematist_vertex_buffer;
+	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;
+	graphics_pipeline.ia.p_vertex_buffer = test_mesh.p_vertex_buffer;
 
 	graphics_pipeline.vs.output_register_count = transform_vs.out_vertex_size / sizeof(v4f32);
 	graphics_pipeline.vs.shader = transform_vs.vs_main;
+	graphics_pipeline.vs.p_shader_resource_views[0] = &env_tex;
 	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 
 	Viewport viewport = { 0.f,0.f,(f32)frame_width,(f32)frame_height,0.f,1.f };
@@ -1216,7 +1214,6 @@ void render() {
 
 	graphics_pipeline.ps.shader = passthrough_ps.ps_main;
 	graphics_pipeline.ps.p_shader_resource_views[0] = &scene_tex;
-	graphics_pipeline.ps.p_shader_resource_views[1] = &env_tex;
 
 	graphics_pipeline.om.p_colors = &frame_buffer[0][0];
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
@@ -1238,8 +1235,8 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
-		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/pyramid.octrn", &test_mesh.header, &p_data);
+		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_test.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(false); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -1254,7 +1251,7 @@ void init() {
 
 		OctarineImageHeader header;
 		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/uv_grid_256.octrn", &header, &scene_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &scene_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		scene_tex.width = header.width;
@@ -1265,7 +1262,7 @@ void init() {
 	{ // Load texture
 
 		OctarineImageHeader header;
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ClearSky_panorama_irradiance.octrn", &header, &env_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &env_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		env_tex.width = header.width;
