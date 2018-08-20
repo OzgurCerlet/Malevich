@@ -33,7 +33,7 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	p_out->SV_POSITION = pos_cs;
 	float3 normal = v3f32_normalize(p_in->NORMAL);
 	float3 color = sample_2D_latlon(env_tex, normal).xyz;
-	float exposure = 0.1;
+	float exposure = 1;
 	color = v3f32_pow(v3f32_sub_v3f32((float3){ 1.f,1.f,1.f}, v3f32_exp(v3f32_mul_f32(color, -exposure))), 1.0 / 2.2);
 
 	p_out->NORMAL = color;

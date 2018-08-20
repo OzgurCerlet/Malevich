@@ -81,16 +81,12 @@ inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {
 
 	f32 uv_x;
 	if(cos_y >= 0) {
-		uv_x = acos(cos_x) / PI;
+		uv_x = acos(cos_x) / TAU;
 	}
 	else {
-		uv_x = 1.0 - acos(cos_x) / PI;
+		uv_x = 1.0 - acos(cos_x) / TAU;
 	}
 
-
-
 	f32 uv_y = acos(cos_theta) / PI;
-
 	return sample_2D(tex, (float2) { uv_x, uv_y });
-
 }

@@ -17,15 +17,15 @@ typedef int DXGI_FORMAT;
 #pragma comment(lib, "octarine_mesh.lib")
 #pragma comment(lib, "octarine_image.lib")
 
-#define WIDTH	512 //820;
-#define HEIGHT	512 //1000;
+#define WIDTH	960 //820;
+#define HEIGHT	540 //1000;
 #define STRECTH_FACTOR 1
 
 #define TILE_WIDTH	8 //820;
 #define TILE_HEIGHT 8 //1000;
 
 #define VECTOR_WIDTH 8
-#define TRIANGLE_COUNT_FACTOR 1
+#define TRIANGLE_COUNT_FACTOR 8
 
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
@@ -37,6 +37,7 @@ const int frame_height = HEIGHT;
 u32 frame_buffer[WIDTH][HEIGHT];
 f32 depth_buffer[WIDTH][HEIGHT];
 
+#define MAX_NUM_CLIP_VERTICES 16
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
 #define PIXEL_SHADER_INPUT_REGISTER_COUNT 32
 #define COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT 16
@@ -115,6 +116,10 @@ typedef struct SuprematistVertex {
 	v4f32 pos;
 	v3f32 color;
 } SuprematistVertex;
+
+typedef struct Vertex {
+	v4f32 a_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
+}Vertex;
 
 typedef struct EdgeFunction{
 	i32 a;
@@ -403,6 +408,7 @@ void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data,
 	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
 	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
+	#pragma omp parallel for schedule(dynamic,3)
 	for(u32 vertex_id = 0; vertex_id < vertex_count; ++vertex_id) {
 		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, graphics_pipeline.vs.p_shader_resource_views, vertex_id);
 	}
@@ -410,11 +416,6 @@ void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data,
 	*pp_vertex_output_data = p_vertex_output_data;
 	rmt_EndCPUSample();
 }
-
-#define  MAX_NUM_CLIP_VERTICES 16
-typedef struct Vertex {
-	v4f32 a_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
-}Vertex;
 
 void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, i32 *p_num_vertices ) {
 
@@ -1236,7 +1237,7 @@ void init() {
 
 		void *p_data = NULL;
 		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_scene.octrn", &test_mesh.header, &p_data);
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/malevich_test.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/sphere_x4.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(false); };
 
 		u32 vertex_size = sizeof(float) * 8;
@@ -1251,7 +1252,7 @@ void init() {
 
 		OctarineImageHeader header;
 		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &scene_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/panorama_test.octrn", &header, &scene_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		scene_tex.width = header.width;
@@ -1262,7 +1263,8 @@ void init() {
 	{ // Load texture
 
 		OctarineImageHeader header;
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &env_tex.p_data);
+		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &env_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/panorama_test.octrn", &header, &env_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		env_tex.width = header.width;
@@ -1273,7 +1275,7 @@ void init() {
 	{ // Init Camera
 #if 1
 		camera.pos = (v3f32){ 3.5f, 1.0f, 1.0f};
-		camera.yaw_rad = TO_RADIANS(-30.0);
+		camera.yaw_rad = TO_RADIANS(0.0);
 		camera.pitch_rad = TO_RADIANS(0.0);
 #else
 	  camera.pos = (v3f32){ 0.395f, 0.216f, 0.025f};
