@@ -25,7 +25,7 @@ typedef int DXGI_FORMAT;
 #define TILE_HEIGHT 8 //1000;
 
 #define VECTOR_WIDTH 8
-#define TRIANGLE_COUNT_FACTOR 8
+#define TRIANGLE_COUNT_FACTOR 1
 
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
@@ -44,6 +44,7 @@ f32 depth_buffer[WIDTH][HEIGHT];
 #define COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT 128
 
 extern VertexShader transform_vs;
+extern VertexShader transform_vs_simd;
 extern VertexShader passthrough_vs;
 extern PixelShader passthrough_ps;
 
@@ -72,7 +73,7 @@ typedef struct IA {
 } IA;
 
 typedef struct VS {
-	void (*shader)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, const void *p_shader_resource_views, u32 vertex_id);
+	void (*shader)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, const void *p_shader_resource_views);
 	u8 output_register_count;
 	void *p_constant_buffers[COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT];
 	void *p_shader_resource_views[COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT];
@@ -402,16 +403,86 @@ void run_input_assembler_stage(u32 index_count, void **pp_vertex_input_data) {
 	rmt_EndCPUSample();
 }
 
-void run_vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
+void run_input_assembler_stage_simd(u32 index_count, void **pp_vertex_input_data) {
+	rmt_BeginCPUSample(input_assambler_stage, 0);
+	// Input Assembler
+	assert(graphics_pipeline.ia.primitive_topology == PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
+	// TODO(cerlet): Implement some kind of post-transform vertex cache.
+	assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
+	u32 vertex_count = index_count;
+	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
+	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
+	f256 *p_vertex = p_vertex_input_data;
+	for(u32 index_index = 0; index_index < index_count; index_index+=8) {
+		i256 index = _mm256_set_epi32(index_index + 7, index_index + 6, index_index + 5, index_index + 4, index_index+ 3, index_index + 2, index_index + 1, index_index);
+		//u32 vertex_index = graphics_pipeline.ia.p_index_buffer[index_index];
+		i256 vertex_index = _mm256_i32gather_epi32((i32*)graphics_pipeline.ia.p_index_buffer, index, 4);
+		//u32 vertex_offset = vertex_index * per_vertex_input_data_size;
+		i256 vertex_offset = _mm256_mullo_epi32(vertex_index, _mm256_set1_epi32(per_vertex_input_data_size));
+		//memcpy(p_vertex, ((u8*)graphics_pipeline.ia.p_vertex_buffer) + vertex_offset, per_vertex_input_data_size);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 0, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 1, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 2, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 3, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 4, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 5, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 6, vertex_offset, 1);
+		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 7, vertex_offset, 1);
+	}
+	*pp_vertex_input_data = p_vertex_input_data;
+	rmt_EndCPUSample();
+}
+
+void run_vertex_shader_stage_omp(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
 	rmt_BeginCPUSample(vertex_shader_stage, 0);
 	// Vertex Shader
+	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
 	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
-	#pragma omp parallel for schedule(dynamic,3)
+	#pragma omp parallel for schedule(static,3)
 	for(u32 vertex_id = 0; vertex_id < vertex_count; ++vertex_id) {
-		graphics_pipeline.vs.shader(p_vertex_input_data, p_vertex_output_data, p_constant_buffers, graphics_pipeline.vs.p_shader_resource_views, vertex_id);
+		void *p_vertex_input = ((u8*)p_vertex_input_data) + vertex_id * per_vertex_input_data_size;
+		void *p_vertex_output = ((u8*)p_vertex_output_data) + vertex_id * per_vertex_output_data_size;
+		graphics_pipeline.vs.shader(p_vertex_input, p_vertex_output, p_constant_buffers, graphics_pipeline.vs.p_shader_resource_views);
 	}
+	*p_per_vertex_output_data_size = per_vertex_output_data_size;
+	*pp_vertex_output_data = p_vertex_output_data;
+	rmt_EndCPUSample();
+}
+
+void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
+	rmt_BeginCPUSample(vertex_shader_stage, 0);
+	// Vertex Shader
+	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
+	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
+	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
+	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
+	#pragma omp parallel for schedule(dynamic)
+	for(u32 vertex_id = 0; vertex_id < vertex_count; vertex_id +=8 ) {
+		u8 *p_vertex_input = (u8*)p_vertex_input_data + vertex_id * per_vertex_input_data_size;
+		f32 *p_vertex_output = (f32*)((u8*)p_vertex_output_data + vertex_id * per_vertex_output_data_size);
+		f256 vertex_output[12];
+		graphics_pipeline.vs.shader(p_vertex_input, vertex_output, p_constant_buffers, graphics_pipeline.vs.p_shader_resource_views);
+
+		for(int i = 0; i < 8; i++) {
+			*(p_vertex_output++) = vertex_output[0].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[1].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[2].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[3].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[4].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[5].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[6].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[7].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[8].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[9].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[10].m256_f32[i];
+			*(p_vertex_output++) = vertex_output[11].m256_f32[i];
+		}
+	}
+
 	*p_per_vertex_output_data_size = per_vertex_output_data_size;
 	*pp_vertex_output_data = p_vertex_output_data;
 	rmt_EndCPUSample();
@@ -1138,11 +1209,13 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	rmt_BeginCPUSample(draw_indexed, 0);
 
 	void *p_vertex_input_data = NULL;
-	run_input_assembler_stage(index_count, &p_vertex_input_data);
-	
+	//run_input_assembler_stage(index_count, &p_vertex_input_data);
+	run_input_assembler_stage_simd(index_count, &p_vertex_input_data);
+
 	u32 per_vertex_output_data_size = 0;
 	void *p_vertex_output_data = NULL;
-	run_vertex_shader_stage(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
+	//run_vertex_shader_stage_omp(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
+	run_vertex_shader_stage_omp_simd(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
 
 	assert((index_count % 3) == 0);
 	u32 triangle_count = index_count / 3;
@@ -1200,13 +1273,18 @@ void clear_depth_stencil_view(const f32 depth) {
 
 void render() {
 	rmt_BeginCPUSample(render, 0);
-	graphics_pipeline.ia.input_layout = transform_vs.in_vertex_size;
+	//graphics_pipeline.ia.input_layout = transform_vs.in_vertex_size;
+	graphics_pipeline.ia.input_layout = transform_vs_simd.in_vertex_size / VECTOR_WIDTH;
+	
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;
 	graphics_pipeline.ia.p_vertex_buffer = test_mesh.p_vertex_buffer;
 
-	graphics_pipeline.vs.output_register_count = transform_vs.out_vertex_size / sizeof(v4f32);
-	graphics_pipeline.vs.shader = transform_vs.vs_main;
+	//graphics_pipeline.vs.output_register_count = transform_vs.out_vertex_size / sizeof(v4f32);
+	graphics_pipeline.vs.output_register_count = transform_vs_simd.out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
+	//graphics_pipeline.vs.shader = transform_vs.vs_main;
+	graphics_pipeline.vs.shader = transform_vs_simd.vs_main;
+	
 	graphics_pipeline.vs.p_shader_resource_views[0] = &env_tex;
 	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 

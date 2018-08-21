@@ -17,6 +17,9 @@ typedef float		f32;
 typedef double		f64;
 typedef __m256		f256;
 
+extern __m256 __cdecl _mm256_acos_ps(__m256);
+extern __m256 __cdecl _mm256_exp_ps(__m256);
+extern __m256 __cdecl _mm256_pow_ps(__m256, __m256);
 
 #ifndef MIN
 	#define MIN(x,y) ((x<y)?(x):(y))
@@ -135,6 +138,12 @@ inline f32 v4f32_dot(v4f32 v0, v4f32 v1) {
 	return result;
 }
 
+inline f256 v4f256_dot(v4f256 v0, v4f256 v1) {
+	f256 result_xy = _mm256_add_ps(_mm256_mul_ps(v0.x, v1.x), _mm256_mul_ps(v0.y, v1.y));
+	f256 result_zw = _mm256_add_ps(_mm256_mul_ps(v0.z, v1.z), _mm256_mul_ps(v0.w, v1.w));
+	return _mm256_add_ps(result_xy, result_zw);
+}
+
 inline f32 v3f32_dot(v3f32 v0, v3f32 v1) {
 	f32 result = v0.x * v1.x + v0.y * v1.y + v0.z * v1.z;
 	return result;
@@ -148,6 +157,21 @@ inline f256 v3f256_dot(v3f256 v0, v3f256 v1) {
 
 inline v4f32 m4x4f32_mul_v4f32(const m4x4f32 *p_m, v4f32 v) {
 	v4f32 result = { v4f32_dot(p_m->r0, v), v4f32_dot(p_m->r1, v), v4f32_dot(p_m->r2, v), v4f32_dot(p_m->r3, v) };
+	return result;
+}
+
+inline v3f256 v3f256_from_v3f32(v3f32 v) {
+	v3f256 result = { _mm256_set1_ps(v.x),_mm256_set1_ps(v.y),_mm256_set1_ps(v.z) };
+	return result;
+}
+
+inline v4f256 v4f256_from_v4f32(v4f32 v) {
+	v4f256 result = {_mm256_set1_ps(v.x),_mm256_set1_ps(v.y),_mm256_set1_ps(v.z),_mm256_set1_ps(v.w)};
+	return result;
+}
+
+inline v4f256 m4x4f32_mul_v4f256(const m4x4f32 *p_m, v4f256 v) {
+	v4f256 result = { v4f256_dot(v4f256_from_v4f32(p_m->r0), v), v4f256_dot(v4f256_from_v4f32(p_m->r1), v), v4f256_dot(v4f256_from_v4f32(p_m->r2), v), v4f256_dot(v4f256_from_v4f32(p_m->r3), v) };
 	return result;
 }
 
@@ -297,12 +321,27 @@ inline v3f32 v3f32_exp(v3f32 v) {
 	return result;
 }
 
+inline v3f256 v3f256_exp(v3f256 v) {
+	v3f256 result = { _mm256_exp_ps(v.x), _mm256_exp_ps(v.y), _mm256_exp_ps(v.z) };
+	return result;
+}
+
 inline v3f32 v3f32_sub_v3f32(v3f32 v0, v3f32 v1) {
 	v3f32 result = { v0.x - v1.x, v0.y - v1.y, v0.z - v1.z };
 	return result;
 }
 
+inline v3f256 v3f256_sub_v3f256(v3f256 v0, v3f256 v1) {
+	v3f256 result = { _mm256_sub_ps(v0.x, v1.x), _mm256_sub_ps(v0.y,v1.y), _mm256_sub_ps(v0.z, v1.z) };
+	return result;
+}
+
 inline v3f32 v3f32_pow(v3f32 v, f32 p) {
 	v3f32 result = { pow(v.x,p), pow(v.y,p), pow(v.z,p) };
+	return result;
+}
+
+inline v3f256 v3f256_pow(v3f256 v, f256 p) {
+	v3f256 result = { _mm256_pow_ps(v.x,p),_mm256_pow_ps(v.y,p), _mm256_pow_ps(v.z,p) };
 	return result;
 }
