@@ -23,6 +23,7 @@ void ps_main(const void *p_fragment_input_data, void *p_fragment_output_data, co
 	//Texture2D env_tex = *((Texture2D*)pp_shader_resource_views[env_tex_id]);
 
 	//v3f256 normal = v3f256_normalize(p_in->NORMAL);
+	//v3f256 color = (v3f256) { p_in->UV.x, p_in->UV.x, _mm256_set1_ps(0) };
 	v3f256 color = p_in->NORMAL;
 	
 

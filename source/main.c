@@ -17,12 +17,12 @@ typedef int DXGI_FORMAT;
 #pragma comment(lib, "octarine_mesh.lib")
 #pragma comment(lib, "octarine_image.lib")
 
-#define WIDTH	960 //820;
-#define HEIGHT	540 //1000;
+#define WIDTH	1024 //820;
+#define HEIGHT	512 //1000;
 #define STRECTH_FACTOR 1
 
-#define TILE_WIDTH	8 //820;
-#define TILE_HEIGHT 8 //1000;
+#define TILE_WIDTH	8 
+#define TILE_HEIGHT 8 
 
 #define VECTOR_WIDTH 8
 #define TRIANGLE_COUNT_FACTOR 1
@@ -39,7 +39,7 @@ f32 depth_buffer[WIDTH][HEIGHT];
 
 #define MAX_NUM_CLIP_VERTICES 16
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
-#define PIXEL_SHADER_INPUT_REGISTER_COUNT 32
+#define PIXEL_SHADER_INPUT_REGISTER_COUNT 4
 #define COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT 16
 #define COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT 128
 
@@ -196,7 +196,7 @@ Texture2D env_tex;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
-Bin					a_bins[NUM_BINS];
+Bin	a_bins[NUM_BINS];
 
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
 {
@@ -380,37 +380,53 @@ u32 suprematist_index_buffer[] = {
 // blue triangle {{60,410},{545,614},{67,887}} color {45,44,83}
 // background color {227, 223, 216}
 
-void run_input_assembler_stage(u32 index_count, void **pp_vertex_input_data) {
+void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_data) {
 	rmt_BeginCPUSample(input_assambler_stage, 0);
-	// Input Assembler
-	if(graphics_pipeline.ia.primitive_topology != PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
-		DebugBreak();
-	}
 
-	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
-	// TODO(cerlet): Implement some kind of post-transform vertex cache.
-	u32 vertex_count = index_count;
-	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
-	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
-	u8 *p_vertex = p_vertex_input_data;
-	for(u32 index_index = 0; index_index < index_count; ++index_index) {
-		u32 vertex_index = graphics_pipeline.ia.p_index_buffer[index_index];
-		u32 vertex_offset = vertex_index * per_vertex_input_data_size;
-		memcpy(p_vertex, ((u8*)graphics_pipeline.ia.p_vertex_buffer) + vertex_offset, per_vertex_input_data_size);
-		p_vertex += per_vertex_input_data_size;
-	}
-	*pp_vertex_input_data = p_vertex_input_data;
-	rmt_EndCPUSample();
-}
-
-void run_input_assembler_stage_simd(u32 index_count, void **pp_vertex_input_data) {
-	rmt_BeginCPUSample(input_assambler_stage, 0);
 	// Input Assembler
 	assert(graphics_pipeline.ia.primitive_topology == PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
 	// TODO(cerlet): Implement some kind of post-transform vertex cache.
 	assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
+
+	u32 vertex_count = index_count;
+	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
+	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
+	f256 *p_vertex = p_vertex_input_data;
+	#pragma omp parallel for schedule(dynamic, 128)
+	for(u32 index_index = 0; index_index < index_count; index_index += 8) {
+		f256 *p_vertex = ((f256*)p_vertex_input_data) + index_index;
+		i256 index = _mm256_set_epi32(index_index + 7, index_index + 6, index_index + 5, index_index + 4, index_index + 3, index_index + 2, index_index + 1, index_index);
+		//u32 vertex_index = graphics_pipeline.ia.p_index_buffer[index_index];
+		i256 vertex_index = _mm256_i32gather_epi32((i32*)graphics_pipeline.ia.p_index_buffer, index, 4);
+		//u32 vertex_offset = vertex_index * per_vertex_input_data_size;
+		i256 vertex_offset = _mm256_mullo_epi32(vertex_index, _mm256_set1_epi32(per_vertex_input_data_size));
+		//memcpy(p_vertex, ((u8*)graphics_pipeline.ia.p_vertex_buffer) + vertex_offset, per_vertex_input_data_size);
+		p_vertex[0] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 0, vertex_offset, 1);
+		p_vertex[1] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 1, vertex_offset, 1);
+		p_vertex[2] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 2, vertex_offset, 1);
+		p_vertex[3] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 3, vertex_offset, 1);
+		p_vertex[4] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 4, vertex_offset, 1);
+		p_vertex[5] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 5, vertex_offset, 1);
+		p_vertex[6] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 6, vertex_offset, 1);
+		p_vertex[7] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 7, vertex_offset, 1);
+	}
+	*pp_vertex_input_data = p_vertex_input_data;
+
+	rmt_EndCPUSample();
+}
+
+void run_input_assembler_stage_simd(u32 index_count, void **pp_vertex_input_data) {
+	rmt_BeginCPUSample(input_assambler_stage, 0);
+	
+	// Input Assembler
+	assert(graphics_pipeline.ia.primitive_topology == PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
+	// TODO(cerlet): Implement some kind of post-transform vertex cache.
+	assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
+	
 	u32 vertex_count = index_count;
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
@@ -432,17 +448,19 @@ void run_input_assembler_stage_simd(u32 index_count, void **pp_vertex_input_data
 		*p_vertex++ = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 7, vertex_offset, 1);
 	}
 	*pp_vertex_input_data = p_vertex_input_data;
+	
 	rmt_EndCPUSample();
 }
 
 void run_vertex_shader_stage_omp(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
 	rmt_BeginCPUSample(vertex_shader_stage, 0);
+	
 	// Vertex Shader
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
 	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
-	#pragma omp parallel for schedule(static,3)
+	#pragma omp parallel for schedule(dynamic,240)
 	for(u32 vertex_id = 0; vertex_id < vertex_count; ++vertex_id) {
 		void *p_vertex_input = ((u8*)p_vertex_input_data) + vertex_id * per_vertex_input_data_size;
 		void *p_vertex_output = ((u8*)p_vertex_output_data) + vertex_id * per_vertex_output_data_size;
@@ -450,17 +468,20 @@ void run_vertex_shader_stage_omp(u32 vertex_count, const void * p_vertex_input_d
 	}
 	*p_per_vertex_output_data_size = per_vertex_output_data_size;
 	*pp_vertex_output_data = p_vertex_output_data;
+	
 	rmt_EndCPUSample();
 }
 
 void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
 	rmt_BeginCPUSample(vertex_shader_stage, 0);
+	
 	// Vertex Shader
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	u32 per_vertex_output_data_size = graphics_pipeline.vs.output_register_count * sizeof(v4f32);
 	void **p_constant_buffers = graphics_pipeline.vs.p_constant_buffers;
 	void *p_vertex_output_data = malloc(vertex_count*per_vertex_output_data_size);
-	#pragma omp parallel for schedule(dynamic)
+	
+	#pragma omp parallel for schedule(dynamic, 128)
 	for(u32 vertex_id = 0; vertex_id < vertex_count; vertex_id +=8 ) {
 		u8 *p_vertex_input = (u8*)p_vertex_input_data + vertex_id * per_vertex_input_data_size;
 		f32 *p_vertex_output = (f32*)((u8*)p_vertex_output_data + vertex_id * per_vertex_output_data_size);
@@ -485,6 +506,7 @@ void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_in
 
 	*p_per_vertex_output_data_size = per_vertex_output_data_size;
 	*pp_vertex_output_data = p_vertex_output_data;
+	
 	rmt_EndCPUSample();
 }
 
@@ -528,16 +550,8 @@ void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, 
 	memcpy(p_clipped_vertices, a_result_vertices, sizeof(Vertex)*num_out_vertices);
 }
 
-void run_clipper(Vertex *p_clipped_vertices, const void *p_vertex_output_data, u32 in_triangle_index, i32 *p_num_clipped_vertices) {
+void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
 	rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
-	u32 num_attributes = graphics_pipeline.vs.output_register_count;
-	u32 vertex_size = num_attributes * sizeof(v4f32);
-	
-	// initialize clipped vertices array with original vertex data
-	memcpy(p_clipped_vertices, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3, vertex_size);
-	memcpy(p_clipped_vertices + 1, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes, vertex_size);
-	memcpy(p_clipped_vertices + 2, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes * 2, vertex_size);
-	*p_num_clipped_vertices = 3;
 
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
@@ -549,7 +563,7 @@ void run_clipper(Vertex *p_clipped_vertices, const void *p_vertex_output_data, u
 	rmt_EndCPUSample();
 }
 
-void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_data, u32 *p_assembled_triangle_count, u32 *p_max_possible_fragment_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
+void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output_data, u32 *p_out_triangle_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
 	rmt_BeginCPUSample(primitive_assembly_stage, 0);
 	// Primitive Assembly
 	const u32 max_clipper_generated_triangle_count = max(in_triangle_count * 2, 512);
@@ -561,9 +575,9 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 	*pp_triangles = malloc(sizeof(Triangle) * out_triangle_count);
 	*pp_attributes = malloc(triangle_data_size * out_triangle_count);
 	
-	u32 max_possible_fragment_count = 0;
-	u32 out_triangle_index = 0;
+	u32 shared_out_triangle_index = 0;
 
+	#pragma omp parallel for schedule(dynamic,128)
 	for(u32 in_triangle_index = 0; in_triangle_index < in_triangle_count; ++in_triangle_index) {
 
 		v4f32 a_vertex_positions[3];
@@ -588,10 +602,27 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 		}
 
 		// clipping
-		i32 num_extra_triangles = 0;
+		bool is_clipping_needed = !(
+			(a_vertex_positions[0].x >= -a_vertex_positions[0].w && a_vertex_positions[1].x >= -a_vertex_positions[1].w && a_vertex_positions[2].x >= -a_vertex_positions[2].w) &&
+			(a_vertex_positions[0].x <= +a_vertex_positions[0].w && a_vertex_positions[1].x <= +a_vertex_positions[1].w && a_vertex_positions[2].x <= +a_vertex_positions[2].w) &&
+			(a_vertex_positions[0].y >= -a_vertex_positions[0].w && a_vertex_positions[1].y >= -a_vertex_positions[1].w && a_vertex_positions[2].y >= -a_vertex_positions[2].w) &&
+			(a_vertex_positions[0].y <= +a_vertex_positions[0].w && a_vertex_positions[1].y <= +a_vertex_positions[1].w && a_vertex_positions[2].y <= +a_vertex_positions[2].w) &&
+			(a_vertex_positions[0].z >= 0.f						 && a_vertex_positions[1].z >= 0.f					    && a_vertex_positions[2].z >= 0.f) &&
+			(a_vertex_positions[0].z <= +a_vertex_positions[0].w && a_vertex_positions[1].z <= +a_vertex_positions[1].w && a_vertex_positions[2].z <= +a_vertex_positions[2].w));
+
 		Vertex a_clipped_vertices[MAX_NUM_CLIP_VERTICES];
-		i32 clipped_vertex_count = 0;
-		run_clipper(&a_clipped_vertices, p_vertex_output_data, in_triangle_index, &clipped_vertex_count);
+		i32 clipped_vertex_count = 3;
+		u32 num_attributes = graphics_pipeline.vs.output_register_count;
+		u32 vertex_size = num_attributes * sizeof(v4f32);
+
+		// In order to have the same code path for non-clipped triangles with clipped triangles, initialize clipped vertices array with the original vertex data
+		memcpy(a_clipped_vertices, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3, per_vertex_offset);
+		memcpy(a_clipped_vertices + 1, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes, per_vertex_offset);
+		memcpy(a_clipped_vertices + 2, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes * 2, per_vertex_offset);
+
+		if(is_clipping_needed) {
+			run_clipper(&a_clipped_vertices, &clipped_vertex_count);
+		}
 
 		for(i32 clipped_vertex_index = 1; clipped_vertex_index < clipped_vertex_count - 1; ++clipped_vertex_index) {
 			a_vertex_positions[0] = a_clipped_vertices[0].a_attributes[0];
@@ -648,15 +679,11 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 
 			// triangle setup
 			signed_area = ((x[1] - x[0]) * (y[2] - y[0])) - ((x[2] - x[0]) * (y[1] - y[0]));
-			if(signed_area == 0) { 
-				continue; 
-			} // degenerate triangle 
-			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { 
-				continue; 
-			}; // degenerate triangle ?
+			if(signed_area == 0) { continue; } // degenerate triangle 
+			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
 
 			// face culling with winding order
-			if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling with
+			if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling
 
 			Setup setup;
 			set_edge_function(&setup.a_edge_functions[2], signed_area, x[0], y[0], x[1], y[1]);
@@ -665,12 +692,16 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 
 			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
 			if(signed_area_f32 == 0) {
-					DebugBreak();
+				DebugBreak();
 			}
 			setup.one_over_area = fabs(1.f / signed_area_f32);
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
 			setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
 			setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
+
+			u32 out_triangle_index;
+			#pragma omp atomic capture
+			{ out_triangle_index = shared_out_triangle_index; shared_out_triangle_index += 1; }
 
 			memcpy((*pp_attributes) + out_triangle_index * num_attributes * 3, &a_clipped_vertices[0], per_vertex_offset);
 			memcpy((*pp_attributes) + out_triangle_index * num_attributes * 3 + num_attributes, &a_clipped_vertices[clipped_vertex_index], per_vertex_offset);
@@ -687,7 +718,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			v2i32 max_bounds;
 			min_bounds.x = MIN3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
 			min_bounds.y = MIN3(y[0], y[1], y[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
-			min_bounds.x = MIN(MAX(min_bounds.x, 0), (i32)viewport.width - 1);							// prevent negative coords
+			min_bounds.x = MIN(MAX(min_bounds.x, 0), (i32)viewport.width - 1); // prevent negative coords
 			min_bounds.y = MIN(MAX(min_bounds.y, 0), (i32)viewport.height - 1);
 			// max corner
 			max_bounds.x = MAX3(x[0], x[1], x[2]) >> NUM_SUB_PIXEL_PRECISION_BITS;
@@ -695,23 +726,22 @@ void run_primitive_assembly_stage(u32 in_triangle_count, void* p_vertex_output_d
 			max_bounds.x = MIN(max_bounds.x + 1, (i32)viewport.width - 1);	// prevent too large coords
 			max_bounds.y = MIN(max_bounds.y + 1, (i32)viewport.height - 1);
 
-			int current_bounds_size = ((max_bounds.x - min_bounds.x + 1) * (max_bounds.y - min_bounds.y + 1));
-			assert(current_bounds_size > 0);
-			max_possible_fragment_count += current_bounds_size;
+			//int current_bounds_size = ((max_bounds.x - min_bounds.x + 1) * (max_bounds.y - min_bounds.y + 1));
+			//assert(current_bounds_size > 0);
+			//max_possible_fragment_count += current_bounds_size;
 			p_current_triangle->min_bounds = min_bounds;
 			p_current_triangle->max_bounds = max_bounds;
 
 			p_current_triangle->p_attributes = (*pp_attributes) + out_triangle_index * 3 * num_attributes;
-			out_triangle_index++;
 		}	
 	}
 
-	*p_assembled_triangle_count = out_triangle_index;
-	*p_max_possible_fragment_count = max_possible_fragment_count;
+	*p_out_triangle_count = shared_out_triangle_index;
+
 	rmt_EndCPUSample();
 }
 
-void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *p_max_possible_fragment_count, u32 **pp_triangle_ids ) {
+void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids ) {
 	rmt_BeginCPUSample(binner, 0);
 	
 	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / TRIANGLE_COUNT_FACTOR;
@@ -721,8 +751,6 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		a_bins[bin_index].num_triangles_self = 0;
 		a_bins[bin_index].num_triangles_upto = 0;
 	}
-
-	u32 num_triangles_in_all_bins = 0;
 
 	for(u32 triangle_index = 0; triangle_index < assembled_triangle_count; ++triangle_index) {
 		Triangle tri = p_triangles[triangle_index];
@@ -735,7 +763,6 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 				u32 bin_index = y * WIDTH_IN_TILES + x;
 				Bin *p_bin = a_bins + bin_index;
 				*((*pp_triangle_ids) + bin_index * assumed_max_num_triangles_per_bin + p_bin->num_triangles_self++) = triangle_index;
-				num_triangles_in_all_bins++;
 			}
 		}
 	}
@@ -743,8 +770,6 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 	for(u32 bin_index = 1; bin_index < NUM_BINS; ++bin_index) {
 		a_bins[bin_index].num_triangles_upto = a_bins[bin_index - 1].num_triangles_self + a_bins[bin_index - 1].num_triangles_upto;
 	}
-
-	*p_max_possible_fragment_count = num_triangles_in_all_bins;// Upper bound on possible fragment count, assume every triangle in every bin covers over the tile.
 
 	rmt_EndCPUSample();
 }
@@ -828,13 +853,13 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 	rmt_EndCPUSample();
 }
 
-void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, u32 *p_num_fragments, TileInfo **pp_fragments) {
+void run_rasterizer_omp(u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 	
 	u32 assumed_max_num_triangles_per_bin = assembled_triangle_count / TRIANGLE_COUNT_FACTOR;
-	*pp_fragments = malloc(32 * NUM_BINS * sizeof(TileInfo));
+	*pp_tile_infos = malloc(32 * NUM_BINS * sizeof(TileInfo));
 
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic, 128)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 
 		v2i32 min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
@@ -857,7 +882,7 @@ void run_rasterizer_omp(u32 max_possible_fragment_count, u32 assembled_triangle_
 				}
 			}
 			tile_info.fragment_mask = fragment_mask;
-			(*pp_fragments)[bin.num_triangles_upto + triangle_index] = tile_info;
+			(*pp_tile_infos)[bin.num_triangles_upto + triangle_index] = tile_info;
 		}
 	}
 
@@ -1007,7 +1032,7 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
 
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic, 128)
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 		Bin bin = a_bins[bin_index];
 		u32 a_tile_colors[64];
@@ -1210,11 +1235,11 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 
 	void *p_vertex_input_data = NULL;
 	//run_input_assembler_stage(index_count, &p_vertex_input_data);
-	run_input_assembler_stage_simd(index_count, &p_vertex_input_data);
+	//run_input_assembler_stage_simd(index_count, &p_vertex_input_data);
+	run_input_assembler_stage_omp_simd(index_count, &p_vertex_input_data);
 
 	u32 per_vertex_output_data_size = 0;
 	void *p_vertex_output_data = NULL;
-	//run_vertex_shader_stage_omp(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
 	run_vertex_shader_stage_omp_simd(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
 
 	assert((index_count % 3) == 0);
@@ -1223,28 +1248,22 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	Triangle *p_triangles = NULL;
 	v4f32 *p_attributes = NULL;
 	u32 assembled_triangle_count = 0;
-	u32 max_possible_fragment_count = 0;
-	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &max_possible_fragment_count, &p_triangles, &p_attributes);
+	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles, &p_attributes);
 	
 	u32 *p_triangle_ids = NULL;
-	run_binner(assembled_triangle_count, p_triangles, &max_possible_fragment_count, &p_triangle_ids);
-	//run_binner_omp(assembled_triangle_count, p_triangles, &max_possible_fragment_count, &p_triangle_ids);
+	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids);
 
-	Fragment *p_fragments = NULL;
-	u32 num_fragments;
-	//run_rasterizer(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
-	run_rasterizer_omp(max_possible_fragment_count, assembled_triangle_count, p_triangles, p_triangle_ids, &num_fragments, &p_fragments);
+	TileInfo *p_tile_infos = NULL;
+	run_rasterizer_omp(assembled_triangle_count, p_triangles, p_triangle_ids, &p_tile_infos);
 
-	//run_pixel_shader_stage(p_fragments, num_fragments);
-	//run_pixel_shader_stage_omp(p_fragments, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
-	run_pixel_shader_stage_omp_simd(p_fragments, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
+	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
 	free(p_attributes);
 	free(p_triangles);
 	free(p_triangle_ids);
-	free(p_fragments);
+	free(p_tile_infos);
 	rmt_EndCPUSample();
 }
 
