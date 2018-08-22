@@ -93,10 +93,10 @@ inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {
 }
 
 inline v4f256 sample_2D_latlon_x8(Texture2D tex, v3f256 dir) {
-	f256 cos_theta = v3f256_dot((v3f256) { _mm256_set1_ps(0), _mm256_set1_ps(0), _mm256_set1_ps(1)}, dir);
+	f256 cos_theta = v3f256_dot(v3f256_normalize((v3f256) { _mm256_set1_ps(0.0), _mm256_set1_ps(0.0), _mm256_set1_ps(1.0)}), dir);
 	v3f256 cos_xy = v3f256_normalize((v3f256) { dir.x, dir.y, _mm256_set1_ps(0) });
-	f256 cos_x = v3f256_dot((v3f256) { _mm256_set1_ps(1), _mm256_set1_ps(0), _mm256_set1_ps(0) }, cos_xy);
-	f256 cos_y = v3f256_dot((v3f256) { _mm256_set1_ps(0), _mm256_set1_ps(1), _mm256_set1_ps(0) }, cos_xy);
+	f256 cos_x = v3f256_dot(v3f256_normalize((v3f256) { _mm256_set1_ps(1.0), _mm256_set1_ps(0.0), _mm256_set1_ps(0.0) }), cos_xy);
+	f256 cos_y = v3f256_dot(v3f256_normalize((v3f256) { _mm256_set1_ps(0.0), _mm256_set1_ps(1.0), _mm256_set1_ps(0.0) }), cos_xy);
 
 	f256 acos_x_over_tau = _mm256_mul_ps(_mm256_acos_ps(cos_x), _mm256_set1_ps(1.0 / TAU));
 	f256 uv_x = _mm256_blendv_ps(_mm256_sub_ps(_mm256_set1_ps(1.0), acos_x_over_tau), acos_x_over_tau, _mm256_cmp_ps(cos_y, _mm256_set1_ps(0.0), _CMP_GE_OQ));
