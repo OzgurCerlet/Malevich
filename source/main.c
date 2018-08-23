@@ -782,6 +782,8 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		a_bins[bin_index].num_triangles_upto = curr_num_tris + a_bins[bin_index - 1].num_triangles_upto;
 	}
 
+	if(a_bins[NUM_BINS - 1].num_triangles_self) num_bins_with_tris++;
+
 	u32 total_num_triangles_in_bins = a_bins[NUM_BINS - 1].num_triangles_upto + a_bins[NUM_BINS - 1].num_triangles_self;
 	*pp_triangle_ids = malloc(sizeof(u32) * total_num_triangles_in_bins);
 	u32 *p_curr_id = *pp_triangle_ids;
@@ -811,6 +813,7 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		p_compacted_bins[curr_compacted_bin_index].bin_index = bin_index;
 		curr_compacted_bin_index++;
 	}
+	assert(curr_compacted_bin_index == num_bins_with_tris);
 	
 	num_compacted_bins = num_bins_with_tris;
 	*p_total_triangle_count = total_num_triangles_in_bins;
