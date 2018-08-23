@@ -397,12 +397,13 @@ void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_
 
 	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
 	// TODO(cerlet): Implement some kind of post-transform vertex cache.
-	//assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
+	assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
 
 	u32 vertex_count = index_count;
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
 	f256 *p_vertex = p_vertex_input_data;
+	
 	#pragma omp parallel for schedule(dynamic, 128)
 	for(u32 index_index = 0; index_index < index_count; index_index += 8) {
 		f256 *p_vertex = ((f256*)p_vertex_input_data) + index_index;
@@ -752,7 +753,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 	rmt_EndCPUSample();
 }
 
-void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids ) {
+void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids, u32* p_total_triangle_count ) {
 	rmt_BeginCPUSample(binner, 0);
 	u32 current_counts[NUM_BINS];
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
@@ -810,8 +811,10 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 		p_compacted_bins[curr_compacted_bin_index].bin_index = bin_index;
 		curr_compacted_bin_index++;
 	}
+	
 	num_compacted_bins = num_bins_with_tris;
-
+	*p_total_triangle_count = total_num_triangles_in_bins;
+	
 	rmt_EndCPUSample();
 }
 
@@ -853,10 +856,10 @@ void run_rasterizer(u32 max_possible_fragment_count, u32 assembled_triangle_coun
 	rmt_EndCPUSample();
 }
 
-void run_rasterizer_omp(u32 assembled_triangle_count, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
+void run_rasterizer_omp(u32 total_triangle_count_in_bins, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 	
-	*pp_tile_infos = malloc(32 * NUM_BINS * sizeof(TileInfo));
+	*pp_tile_infos = malloc(total_triangle_count_in_bins * sizeof(TileInfo));
 
 	#pragma omp parallel for schedule(dynamic, 128)
 	for(u32 bin_index = 0; bin_index < num_compacted_bins; ++bin_index) {
@@ -1026,7 +1029,7 @@ void run_pixel_shader_stage_omp(const TileInfo* p_fragments, const Triangle *p_t
 	rmt_EndCPUSample();
 }
 
-void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles, const u32 num_triangles) {
+void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
@@ -1189,8 +1192,6 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	rmt_BeginCPUSample(draw_indexed, 0);
 
 	void *p_vertex_input_data = NULL;
-	//run_input_assembler_stage(index_count, &p_vertex_input_data);
-	//run_input_assembler_stage_simd(index_count, &p_vertex_input_data);
 	run_input_assembler_stage_omp_simd(index_count, &p_vertex_input_data);
 
 	u32 per_vertex_output_data_size = 0;
@@ -1206,12 +1207,13 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles, &p_attributes);
 	
 	u32 *p_triangle_ids = NULL;
-	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids);
+	u32 total_triangle_count_in_bins = 0;
+	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids, &total_triangle_count_in_bins);
 
 	TileInfo *p_tile_infos = NULL;
-	run_rasterizer_omp(assembled_triangle_count, p_triangles, p_triangle_ids, &p_tile_infos);
+	run_rasterizer_omp(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
 
-	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles, assembled_triangle_count / TRIANGLE_COUNT_FACTOR);
+	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles);
 
 	free(p_vertex_input_data);
 	free(p_vertex_output_data);
