@@ -31,11 +31,11 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 
 	p_out->SV_POSITION = pos_cs;
 	v3f256 normal = v3f256_normalize(p_in->NORMAL);
-	v3f256 color = sample_2D_latlon_x8(env_tex, normal).xyz;
-	float exposure = 1;
-	color = v3f256_pow(v3f256_sub_v3f256((v3f256){ _mm256_set1_ps(1.f), _mm256_set1_ps(1.f), _mm256_set1_ps(1.f)}, v3f256_exp(v3f256_mul_f256(color, _mm256_set1_ps(-exposure)))), _mm256_set1_ps(1.0 / 2.2));
+	//v3f256 color = sample_2D_latlon_x8(env_tex, normal).xyz;
+	//float exposure = 1;
+	//color = v3f256_pow(v3f256_sub_v3f256((v3f256){ _mm256_set1_ps(1.f), _mm256_set1_ps(1.f), _mm256_set1_ps(1.f)}, v3f256_exp(v3f256_mul_f256(color, _mm256_set1_ps(-exposure)))), _mm256_set1_ps(1.0 / 2.2));
 
-	p_out->NORMAL = color;
+	p_out->NORMAL = normal;
 	p_out->UV = (v2f256) { p_in->UV.x, p_in->UV.y };
 }
 

@@ -1060,7 +1060,7 @@ void init() {
 	{ // Load mesh
 
 		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/suzanne.octrn", &test_mesh.header, &p_data);
+		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/toon_house_mesh.octrn", &test_mesh.header, &p_data);
 		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/sphere_x4.octrn", &test_mesh.header, &p_data);
 		if(result != OCTARINE_MESH_OK) { assert(false); };
 
@@ -1076,7 +1076,7 @@ void init() {
 
 		OctarineImageHeader header;
 		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &scene_tex.p_data);
+		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/toon_house_tex.octrn", &header, &scene_tex.p_data);
 		if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
 		scene_tex.width = header.width;

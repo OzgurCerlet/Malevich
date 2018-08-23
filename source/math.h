@@ -17,6 +17,7 @@ typedef float		f32;
 typedef double		f64;
 typedef __m256		f256;
 
+// WARNING(cerlet): When using visual studio 2017's "immintrin.h" we need to manually export the symbol names for intel's svml
 extern __m256 __cdecl _mm256_acos_ps(__m256);
 extern __m256 __cdecl _mm256_exp_ps(__m256);
 extern __m256 __cdecl _mm256_pow_ps(__m256, __m256);
@@ -343,5 +344,10 @@ inline v3f32 v3f32_pow(v3f32 v, f32 p) {
 
 inline v3f256 v3f256_pow(v3f256 v, f256 p) {
 	v3f256 result = { _mm256_pow_ps(v.x,p),_mm256_pow_ps(v.y,p), _mm256_pow_ps(v.z,p) };
+	return result;
+}
+
+inline v4f32 v4f32_lerp(v4f32 v0, v4f32 v1, f32 interpolant) {
+	v4f32 result = v4f32_add_v4f32(v4f32_mul_f32(v0, 1.0 - interpolant), v4f32_mul_f32(v1, interpolant));
 	return result;
 }

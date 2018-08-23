@@ -23,17 +23,70 @@ typedef struct Texture2D {
 	uint height;
 } Texture2D;
 
+inline uint get_texel_u(Texture2D tex, i32 s, i32 t) {
+	return *(((uint*)tex.p_data) + MAX(MIN(t, tex.height - 1), 0) * tex.width + MAX(MIN(s, tex.width - 1), 0));
+}
+
+inline float4 get_texel_f(Texture2D tex, i32 s, i32 t) {
+	return *(((float4*)tex.p_data) + MAX(MIN(t, tex.height - 1), 0) * tex.width + MAX(MIN(s, tex.width - 1), 0));
+}
+
+inline v4f32 point_u(Texture2D tex, f32 u, f32 v) {
+	i32 s = (i32)(tex.width * u);
+	i32 t = (i32)(tex.height * (1.0 - v));
+	v4f32 texel = decode_u32_as_color(get_texel_u(tex, s, t));
+	return texel;
+}
+
+inline v4f32 point_f(Texture2D tex, f32 u, f32 v) {
+	i32 s = (i32)(tex.width * u);
+	i32 t = (i32)(tex.height * (1.0 - v));
+	v4f32 texel = get_texel_f(tex, s, t);
+	return texel;
+}
+
+inline v4f32 bilinear_u(Texture2D tex, f32 u, f32 v) {
+	f32 s_f32 = tex.width * u - 0.5;
+	f32 t_f32 = tex.height * (1.0 - v) - 0.5;
+	i32 s = (int)floor(s_f32);
+	i32 t = (int)floor(t_f32);
+	f32 frac_s = s_f32 - (float)s;
+	f32 frac_t = t_f32 - (float)t;
+
+	v4f32 texel_00 = decode_u32_as_color(get_texel_u(tex, s, t));
+	v4f32 texel_10 = decode_u32_as_color(get_texel_u(tex, s + 1, t));
+	v4f32 texel_01 = decode_u32_as_color(get_texel_u(tex, s, t + 1));
+	v4f32 texel_11 = decode_u32_as_color(get_texel_u(tex, s + 1, t + 1));
+
+	v4f32 texel_0010 = v4f32_lerp(texel_00, texel_10, frac_s);
+	v4f32 texel_0111 = v4f32_lerp(texel_01, texel_11, frac_s);
+
+	v4f32 result = v4f32_lerp(texel_0010, texel_0111, frac_t);
+	return result;
+}
+
+inline v4f32 bilinear_f(Texture2D tex, f32 u, f32 v) {
+	f32 s_f32 = tex.width * u - 0.5;
+	f32 t_f32 = tex.height * (1.0 - v) - 0.5;
+	i32 s = (int)floor(s_f32);
+	i32 t = (int)floor(t_f32);
+	f32 frac_s = s_f32 - (float)s;
+	f32 frac_t = t_f32 - (float)t;
+
+	v4f32 texel_00 = get_texel_f(tex, s, t);
+	v4f32 texel_10 = get_texel_f(tex, s + 1, t);
+	v4f32 texel_01 = get_texel_f(tex, s, t + 1);
+	v4f32 texel_11 = get_texel_f(tex, s + 1, t + 1);
+
+	v4f32 texel_0010 = v4f32_lerp(texel_00, texel_10, frac_s);
+	v4f32 texel_0111 = v4f32_lerp(texel_01, texel_11, frac_s);
+
+	v4f32 result = v4f32_lerp(texel_0010, texel_0111, frac_t);
+	return result;
+}
+
 inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
-	tex_coord.x = tex_coord.x > 1.0 ? 1.0 : (tex_coord.x < 0.0 ? 0.0 : tex_coord.x);
-	tex_coord.y = tex_coord.y > 1.0 ? 1.0 : (tex_coord.y < 0.0 ? 0.0 : tex_coord.y);
-
-	int s = (int)(tex.width * tex_coord.x - 0.5);
-	int t = (int)(tex.height * tex_coord.y - 0.5);
-	//uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
-	//return decode_u32_as_color(texel);
-
-	float4 texel = *(((float4*)tex.p_data) + t * tex.width + s);
-
+	float4 texel = get_texel_f(tex, tex_coord.x, tex_coord.y);
 	return texel;
 }
 
@@ -46,18 +99,8 @@ inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
 		if(!mask.m256i_i32[i]) continue;
 		_mm256_store_ps(a_u_s, tex_coord.x);
 		_mm256_store_ps(a_v_s, tex_coord.y);
-		if(a_u_s[i] < 0.0 || a_u_s[i] > 1.0) {
-			a_u_s[i] = 0;
-		}
-		if(a_v_s[i] < 0.0 || a_v_s[i] > 1.0) {
-			a_v_s[i] = 0;
-		}
 
-		int s = (int)(tex.width * a_u_s[i] - 0.5);
-		int t = (int)(tex.height * a_v_s[i] - 0.5);
-		//uint texel = *(((uint*)tex.p_data) + t * tex.width + s);
-		//a_texels[i] = decode_u32_as_color(texel);	
-		a_texels[i] = *(((float4*)tex.p_data) + t * tex.width + s);
+		a_texels[i] = bilinear_u(tex, a_u_s[i], a_v_s[i]);
 	}
 	
 	const i256 offset = _mm256_set_epi32(
