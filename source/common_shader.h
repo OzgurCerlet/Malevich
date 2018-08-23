@@ -10,7 +10,8 @@ typedef m4x4f32 float4x4;
 typedef struct VertexShader {
 	unsigned int in_vertex_size;
 	unsigned int out_vertex_size;
-	void(*vs_main)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers, unsigned int vertex_id);
+	//void(*vs_main)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers);
+	void(*vs_main)();
 }VertexShader;
 
 typedef struct PixelShader {
@@ -27,6 +28,14 @@ inline uint get_texel_u(Texture2D tex, i32 s, i32 t) {
 	return *(((uint*)tex.p_data) + MAX(MIN(t, tex.height - 1), 0) * tex.width + MAX(MIN(s, tex.width - 1), 0));
 }
 
+inline i256 get_texel_u_x8(Texture2D tex, i256 s, i256 t) {
+	s = _mm256_max_epi32(_mm256_min_epi32(s, _mm256_set1_epi32(tex.width  - 1)), _mm256_set1_epi32(0));
+	t = _mm256_max_epi32(_mm256_min_epi32(t, _mm256_set1_epi32(tex.height - 1)), _mm256_set1_epi32(0));
+	s = _mm256_add_epi32(_mm256_mullo_epi32(t, _mm256_set1_epi32(tex.width)), s);
+	i256 result = _mm256_i32gather_epi32(tex.p_data, s, 4);
+	return result;
+}
+
 inline float4 get_texel_f(Texture2D tex, i32 s, i32 t) {
 	return *(((float4*)tex.p_data) + MAX(MIN(t, tex.height - 1), 0) * tex.width + MAX(MIN(s, tex.width - 1), 0));
 }
@@ -35,6 +44,13 @@ inline v4f32 point_u(Texture2D tex, f32 u, f32 v) {
 	i32 s = (i32)(tex.width * u);
 	i32 t = (i32)(tex.height * (1.0 - v));
 	v4f32 texel = decode_u32_as_color(get_texel_u(tex, s, t));
+	return texel;
+}
+
+inline v4f256 point_u_x8(Texture2D tex, f256 u, f256 v) {
+	i256 s = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_set1_ps((f32)tex.width), u));
+	i256 t = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_set1_ps((f32)tex.height), _mm256_sub_ps(_mm256_set1_ps(1.0), v)));
+	v4f256 texel = decode_u32_as_color_x8(get_texel_u_x8(tex, s, t));
 	return texel;
 }
 
@@ -65,6 +81,26 @@ inline v4f32 bilinear_u(Texture2D tex, f32 u, f32 v) {
 	return result;
 }
 
+inline v4f256 bilinear_u_x8(Texture2D tex, f256 u, f256 v) {
+	f256 s_f32 = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps((f32)tex.width), u), _mm256_set1_ps(-0.5));
+	f256 t_f32 = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps((f32)tex.height), _mm256_sub_ps(_mm256_set1_ps(1.0),  v)), _mm256_set1_ps(-0.5));
+	i256 s = _mm256_cvtps_epi32(_mm256_floor_ps(s_f32));
+	i256 t = _mm256_cvtps_epi32(_mm256_floor_ps(t_f32));
+	f256 frac_s = _mm256_sub_ps(s_f32, _mm256_cvtepi32_ps(s));
+	f256 frac_t = _mm256_sub_ps(t_f32, _mm256_cvtepi32_ps(t));
+
+	v4f256 texel_00 = decode_u32_as_color_x8(get_texel_u_x8(tex, s, t));
+	v4f256 texel_10 = decode_u32_as_color_x8(get_texel_u_x8(tex, _mm256_add_epi32(s, _mm256_set1_epi32(1)), t));
+	v4f256 texel_0010 = v4f256_lerp(texel_00, texel_10, frac_s);
+	
+	v4f256 texel_01 = decode_u32_as_color_x8(get_texel_u_x8(tex, s, _mm256_add_epi32(t, _mm256_set1_epi32(1))));
+	v4f256 texel_11 = decode_u32_as_color_x8(get_texel_u_x8(tex, _mm256_add_epi32(s, _mm256_set1_epi32(1)), _mm256_add_epi32(t, _mm256_set1_epi32(1))));
+	v4f256 texel_0111 = v4f256_lerp(texel_01, texel_11, frac_s);
+
+	v4f256 result = v4f256_lerp(texel_0010, texel_0111, frac_t);
+	return result;
+}
+
 inline v4f32 bilinear_f(Texture2D tex, f32 u, f32 v) {
 	f32 s_f32 = tex.width * u - 0.5;
 	f32 t_f32 = tex.height * (1.0 - v) - 0.5;
@@ -90,7 +126,7 @@ inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
 	return texel;
 }
 
-inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
+inline v4f256 sample_2D_x8_masked(Texture2D tex, v2f256 tex_coord, i256 mask) {
 	v4f256 result;
 	v4f32 a_texels[8];
 	f32 a_u_s[8];
@@ -100,6 +136,7 @@ inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
 		_mm256_store_ps(a_u_s, tex_coord.x);
 		_mm256_store_ps(a_v_s, tex_coord.y);
 
+		//a_texels[i] = point_u(tex, a_u_s[i], a_v_s[i]);
 		a_texels[i] = bilinear_u(tex, a_u_s[i], a_v_s[i]);
 	}
 	
@@ -114,6 +151,12 @@ inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
 
 	return result;
 
+}
+
+inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
+	//v4f256 result = point_u_x8(tex, tex_coord.x, tex_coord.y);
+	v4f256 result = bilinear_u_x8(tex, tex_coord.x, tex_coord.y);
+	return result;
 }
 
 inline float4 sample_2D_latlon(Texture2D tex, float3 dir) {

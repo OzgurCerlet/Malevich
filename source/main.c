@@ -207,6 +207,11 @@ Bin	a_bins[NUM_BINS];
 CompactedBin *p_compacted_bins;
 u32  num_compacted_bins;
 
+typedef struct tagV5BMPINFO {
+	BITMAPV5HEADER bmiHeader;
+	DWORD        bmiColors[3];
+} V5BMPINFO;
+
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
 {
 	PAINTSTRUCT paint_struct;
@@ -214,15 +219,32 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	switch(msg) {
 		case WM_PAINT:
 			h_device_context = BeginPaint(h_window, &paint_struct);
-			BITMAPINFO info = { 0 };
-			ZeroMemory(&info, sizeof(BITMAPINFO));
-			info.bmiHeader.biBitCount = 32;
-			info.bmiHeader.biWidth = frame_width;
-			info.bmiHeader.biHeight = -(i32)(frame_height); // for top_down images we need to negate the height
-			info.bmiHeader.biPlanes = 1;
-			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			info.bmiHeader.biCompression = BI_RGB;
-			StretchDIBits(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+			//BITMAPINFO info = { 0 };
+			//ZeroMemory(&info, sizeof(BITMAPINFO));
+			//info.bmiHeader.biBitCount = 32;
+			//info.bmiHeader.biWidth = frame_width;
+			//info.bmiHeader.biHeight = -(i32)(frame_height); // for top_down images we need to negate the height
+			//info.bmiHeader.biPlanes = 1;
+			//info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			//info.bmiHeader.biCompression = BI_RGB;
+			V5BMPINFO bmpinfo = { 0 };
+			BITMAPV5HEADER bmpheader = { 0 };
+			bmpheader.bV5Size = sizeof(BITMAPV5HEADER);
+			bmpheader.bV5Width = frame_width;
+			bmpheader.bV5Height = -(i32)(frame_height); // for top_down images we need to negate the height
+			bmpheader.bV5Planes = 1;
+			bmpheader.bV5BitCount = 32;
+			bmpheader.bV5Compression = BI_BITFIELDS;
+			bmpheader.bV5SizeImage = frame_width * frame_height * 4;
+			bmpheader.bV5RedMask = 0x00FF0000;
+			bmpheader.bV5GreenMask = 0x0000FF00;
+			bmpheader.bV5BlueMask = 0x000000FF;
+			bmpheader.bV5AlphaMask = 0xFF000000;
+			bmpheader.bV5CSType = LCS_WINDOWS_COLOR_SPACE; // LCS_WINDOWS_COLOR_SPACE
+			bmpheader.bV5Intent = LCS_GM_BUSINESS;
+			bmpinfo.bmiHeader = bmpheader;
+
+			StretchDIBits(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &bmpinfo, DIB_RGB_COLORS, SRCCOPY);
 			EndPaint(h_window, &paint_struct);
 			break;
 		case WM_KEYDOWN: {
@@ -300,28 +322,6 @@ inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32
 	p_edge->c = c;
 }
 
-inline bool is_inside_edge(Setup *p_setup, const u32 edge_index, const v2i32 frag_coord) {
-	//i32 a = p_setup->a_edge_functions[edge_index].a;
-	//i32 b = p_setup->a_edge_functions[edge_index].b;
-	//i32 c = p_setup->a_edge_functions[edge_index].c;
-	//// Need to lift a and be to c's precision level
-	//i32 signed_distance = ((a * frag_coord.x) << NUM_SUB_PIXEL_PRECISION_BITS) + ((b * frag_coord.y) << NUM_SUB_PIXEL_PRECISION_BITS) + c;
-	//p_setup->a_signed_distances[edge_index] = signed_distance;
-	//if(signed_distance > 0) return true;
-	//if(signed_distance < 0) return false;
-	//if(a > 0) return true;
-	//if(a < 0) return false;
-	//if(b > 0) return true;
-	//return false;
-}
-
-inline bool is_inside_triangle(Setup *p_setup, v2i32 frag_coord) {
-	bool w0 = is_inside_edge(p_setup, 0, frag_coord);
-	bool w1 = is_inside_edge(p_setup, 1, frag_coord);
-	bool w2 = is_inside_edge(p_setup, 2, frag_coord);
-	return w0 && w1 && w2;
-}
-
 // In this context, barycentric coords (u,v,w) = areal coordinates (A1/A,A2/A,A0/A) => u+v+w = 1;
 inline v2f32 compute_barycentric_coords(const Setup *p_setup) {
 	//v2f32 barycentric_coords;
@@ -341,24 +341,6 @@ inline v2f32 compute_perspective_barycentric_coords(const Setup *p_setup, v2f32 
 	perspective_barycentric_coords.y = v_bary * p_setup->a_reciprocal_ws[2] / denom;
 
 	return perspective_barycentric_coords;
-}
-
-__forceinline v4f32 interpolate_attribute(const v4f32 *p_attributes, v2f32 barycentric_coords, u8 num_attributes_per_vertex) {
-	v4f32 v0_attribute = *(p_attributes );
-	v4f32 v1_attribute = *(p_attributes + num_attributes_per_vertex);
-	v4f32 v2_attribute = *(p_attributes + num_attributes_per_vertex * 2);
-
-	return v0_attribute =
-		v4f32_add_v4f32(v0_attribute,
-			v4f32_add_v4f32(
-				v4f32_mul_f32(
-					v4f32_subtract_v4f32(v1_attribute, v0_attribute), barycentric_coords.x
-				),
-				v4f32_mul_f32(
-					v4f32_subtract_v4f32(v2_attribute, v0_attribute), barycentric_coords.y
-				)
-			)
-		);
 }
 
 SuprematistVertex suprematist_vertex_buffer[] = {
@@ -648,9 +630,8 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 
 			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
-			if(signed_area_f32 == 0) {
-				DebugBreak();
-			}
+			assert(signed_area_f32 != 0);
+
 			setup.one_over_area = fabs(1.f / signed_area_f32);
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
 			setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
@@ -999,7 +980,7 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 
 void clear_render_target_view(const f32 *p_clear_color) {
 	rmt_BeginCPUSample(clear_render_target_view, 0);
-	v3f32 clear_color = { p_clear_color[0],p_clear_color[1] ,p_clear_color[2] };
+	v4f32 clear_color = { p_clear_color[0],p_clear_color[1] ,p_clear_color[2], p_clear_color[3]};
 	u32 encoded_clear = encode_color_as_u32(clear_color);
 	
 	u32 frame_buffer_texel_count = sizeof(frame_buffer) / sizeof(u32);
@@ -1081,6 +1062,17 @@ void init() {
 
 		scene_tex.width = header.width;
 		scene_tex.height = header.height;
+
+		for(i32 t = 0; t < header.height; ++t) {
+			for(i32 s = 0; s < header.width; ++s) {
+				v4f32 texel = decode_u32_as_color(get_texel_u(scene_tex, s, t));
+				texel.x = srgb_to_linear(texel.x);
+				texel.y = srgb_to_linear(texel.y);
+				texel.z = srgb_to_linear(texel.z);
+				texel.w = srgb_to_linear(texel.w);
+				((u32*)scene_tex.p_data)[t*scene_tex.width + s] = encode_color_as_u32(texel);
+			}
+		}
 
 	}
 

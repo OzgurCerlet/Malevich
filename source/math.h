@@ -241,6 +241,21 @@ inline v4f32 v4f32_mul_v4f32(v4f32 v0, v4f32 v1) {
 	return result;
 }
 
+inline v4f256 v4f256_add_v4f256(v4f256 v0, v4f256 v1) {
+	v4f256 result = { _mm256_add_ps(v0.x, v1.x), _mm256_add_ps(v0.y, v1.y), _mm256_add_ps(v0.z, v1.z), _mm256_add_ps(v0.w, v1.w) };
+	return result;
+}
+
+inline v4f256 v4f256_mul_v4f256(v4f256 v0, v4f256 v1) {
+	v4f256 result = { _mm256_mul_ps(v0.x, v1.x), _mm256_mul_ps(v0.y, v1.y), _mm256_mul_ps(v0.z, v1.z), _mm256_mul_ps(v0.w, v1.w) };
+	return result;
+}
+
+inline v4f256 v4f256_mul_f256(v4f256 v0, f256 f) {
+	v4f256 result = { _mm256_mul_ps(v0.x, f), _mm256_mul_ps(v0.y, f), _mm256_mul_ps(v0.z, f), _mm256_mul_ps(v0.w, f) };
+	return result;
+}
+
 inline f32 v4f32_length(v4f32 v) {
 	return sqrt(v4f32_dot(v, v));
 }
@@ -304,16 +319,27 @@ inline m4x4f32 m4x4f32_inverse(const m4x4f32* M)
 	return inverse;
 }
 
-inline u32 encode_color_as_u32(v3f32 color) {
-	return (((u32)(color.x*255.f)) << 16) + (((u32)(color.y*255.f)) << 8) + (((u32)(color.z*255.f)));
+inline u32 encode_color_as_u32(v4f32 color) {
+	return (((u32)(color.w*255.f)) << 24) + (((u32)(color.z*255.f)) << 16) + (((u32)(color.y*255.f)) << 8) + (((u32)(color.x*255.f)));
 }
 
 inline v4f32 decode_u32_as_color(u32 encoded_color) {
 	v4f32 result;
-	result.w = ((encoded_color & 0xFF'00'00'00) >> 24) / 255.0f;
-	result.z = ((encoded_color & 0x00'FF'00'00) >> 16) / 255.0f;
-	result.y = ((encoded_color & 0x00'00'FF'00) >> 8)/ 255.0f;
-	result.x = (encoded_color & 0x00'00'00'FF) / 255.0f;
+	f32 normalizer = 1.0 / 255.0;
+	result.x = (encoded_color & 0x00'00'00'FF) * normalizer;
+	result.y = ((encoded_color & 0x00'00'FF'00) >> 8)* normalizer;
+	result.z = ((encoded_color & 0x00'FF'00'00) >> 16) * normalizer;
+	result.w = ((encoded_color & 0xFF'00'00'00) >> 24) * normalizer;
+	return result;
+}
+
+inline v4f256 decode_u32_as_color_x8(i256 encoded_color) {
+	v4f256 result;
+	f256 normalizer = _mm256_set1_ps(1.0 / 255.0);
+	result.x = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srli_epi32(_mm256_and_si256(encoded_color, _mm256_set1_epi32(0x00'00'00'FF)), 0)),  normalizer);
+	result.y = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srli_epi32(_mm256_and_si256(encoded_color, _mm256_set1_epi32(0x00'00'FF'00)), 8)),  normalizer);
+	result.z = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srli_epi32(_mm256_and_si256(encoded_color, _mm256_set1_epi32(0x00'FF'00'00)), 16)), normalizer);
+	result.w = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srli_epi32(_mm256_and_si256(encoded_color, _mm256_set1_epi32(0xFF'00'00'00)), 24)), normalizer);
 	return result;
 }
 
@@ -349,5 +375,53 @@ inline v3f256 v3f256_pow(v3f256 v, f256 p) {
 
 inline v4f32 v4f32_lerp(v4f32 v0, v4f32 v1, f32 interpolant) {
 	v4f32 result = v4f32_add_v4f32(v4f32_mul_f32(v0, 1.0 - interpolant), v4f32_mul_f32(v1, interpolant));
+	return result;
+}
+
+inline v4f256 v4f256_lerp(v4f256 v0, v4f256 v1, f256 interpolant) {
+	v4f256 result = v4f256_add_v4f256(v4f256_mul_f256(v0, _mm256_sub_ps(_mm256_set1_ps(1.0), interpolant)), v4f256_mul_f256(v1, interpolant));
+	return result;
+}
+
+inline f32 srgb_to_linear(f32 v) {
+	f32 result;
+	if(v <= 0.04045) {
+		result = v / 12.92;
+	} 
+	else {
+		result = pow(((v + 0.055) / 1.055), 2.4);
+	}
+	return result;
+}
+
+inline f32 linear_to_srgb(f32 v) {
+	f32 result;
+	if(v <= 0.0031308) {
+		result = v * 12.92;
+	}
+	else {
+		result = 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+	}
+	return result;
+}
+
+// http://chilliant.blogspot.com/2012/08/srgb-approximations-for-hlsl.html
+inline f32 linear_from_srgb_approx(f32 c_srgb) {
+	f32 c_linear = pow(c_srgb, 2.233333333);
+	return c_linear;
+}
+
+inline f32 srgb_from_linear_approx(f32 c_linear) {
+	f32 c_srgb = max(1.055 * pow(c_linear, 0.416666667) - 0.055, 0);
+	return c_srgb;
+}
+
+inline f256 f256_srgb_from_linear_approx(f256 c_linear) {
+	f256 c_srgb = _mm256_max_ps(_mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(1.055), _mm256_pow_ps(c_linear, _mm256_set1_ps(0.416666667))), _mm256_set1_ps(-0.055)), _mm256_set1_ps(0.0));
+	return c_srgb;
+}
+
+inline v3f256 v3f256_srgb_from_linear_approx(v3f256 c_linear) {
+	v3f256 result = { f256_srgb_from_linear_approx(c_linear.x), f256_srgb_from_linear_approx(c_linear.y), f256_srgb_from_linear_approx(c_linear.z) };
 	return result;
 }

@@ -24,7 +24,8 @@ void ps_main(const void *p_fragment_input_data, void *p_fragment_output_data, co
 	//v3f256 normal = v3f256_normalize(p_in->NORMAL);
 	//v3f256 color = (v3f256) { p_in->UV.x, p_in->UV.x, _mm256_set1_ps(0) };
 	v3f256 color = sample_2D_x8(scene_tex, p_in->UV, mask).xyz;
-	
+	color = v3f256_srgb_from_linear_approx(color);
+
 	p_out->SV_TARGET.xyz = color;
 }
 
