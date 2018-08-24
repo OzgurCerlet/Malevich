@@ -782,6 +782,53 @@ void run_rasterizer_omp(u32 total_triangle_count_in_bins, const Triangle *p_tria
 	rmt_EndCPUSample();
 }
 
+void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
+	rmt_BeginCPUSample(rasterizer_stage, 0);
+
+	*pp_tile_infos = malloc(total_triangle_count_in_bins * sizeof(TileInfo));
+
+	#pragma omp parallel for schedule(dynamic, 128)
+	for(u32 bin_index = 0; bin_index < num_compacted_bins; ++bin_index) {
+		CompactedBin bin = p_compacted_bins[bin_index];
+		v2i32 min_bounds = { TILE_WIDTH * (bin.bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin.bin_index / WIDTH_IN_TILES) };
+		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
+		i256 x = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.x), _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
+		u32 num_triangles_of_current_bin = bin.num_triangles_self;
+		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
+			u32 triangle_id = p_triangle_ids[bin.num_triangles_upto + triangle_index];
+			TileInfo tile_info;
+			Triangle tri = p_triangles[triangle_id];
+			tile_info.triangle_id = triangle_id;
+			u64 fragment_mask = 0;
+			i256 y = _mm256_set1_epi32(min_bounds.y);
+			for(i32 i = 0; i < 8; ++i) {
+				i256 alpha = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[0].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				alpha = _mm256_add_epi32(alpha, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[0].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
+				alpha = _mm256_add_epi32(alpha, _mm256_set1_epi32(tri.setup.a_edge_functions[0].c));
+
+				i256 beta = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[1].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				beta = _mm256_add_epi32(beta, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[1].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
+				beta = _mm256_add_epi32(beta, _mm256_set1_epi32(tri.setup.a_edge_functions[1].c));
+
+				i256 gamma = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[2].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
+				gamma = _mm256_add_epi32(gamma, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
+				gamma = _mm256_add_epi32(gamma, _mm256_set1_epi32(tri.setup.a_edge_functions[2].c));
+
+				i256 mask = _mm256_cmpgt_epi32((_mm256_or_si256(_mm256_or_si256(alpha, beta), gamma)), _mm256_setzero_si256());
+				u32 mask32 = _mm256_movemask_epi8(mask);
+				// OPTIMIZATION(cerlet): There should be a fast way to do this!
+				u8 mask8 =	(((mask32 >> 31) & 1) << 7) + (((mask32 >> 27) & 1) << 6) + (((mask32 >> 23) & 1) << 5) + (((mask32 >> 19) & 1) << 4) + 
+							(((mask32 >> 15) & 1) << 3) + (((mask32 >> 11) & 1) << 2) + (((mask32 >> 7) & 1) << 1) + (((mask32 >>  3) & 1) << 0);
+				fragment_mask += ((u64)mask8 << (i * 8));
+				y = _mm256_add_epi32(y, _mm256_set1_epi32(1));
+			}
+			tile_info.fragment_mask = fragment_mask;
+			(*pp_tile_infos)[bin.num_triangles_upto + triangle_index] = tile_info;
+		}	
+	}
+	rmt_EndCPUSample();
+}
+
 void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 
@@ -964,7 +1011,8 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids, &total_triangle_count_in_bins);
 
 	TileInfo *p_tile_infos = NULL;
-	run_rasterizer_omp(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
+	//run_rasterizer_omp(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
+	run_rasterizer_omp_simd(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
 
 	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles);
 
@@ -1001,6 +1049,15 @@ void clear_depth_stencil_view(const f32 depth) {
 	rmt_EndCPUSample();
 }
 
+void test() {
+	i256 ones = _mm256_set_epi32(0x08'08'08'08, 0x07'07'07'07, 0x06'06'06'06, 0x05'05'05'05, 0x04'04'04'04, 0x03'03'03'03, 0x02'02'02'02, 0x01'01'01'01);
+	u32 mask = 0b00001100'00001000'00000100'00000000;
+	i256 zeros = _mm256_set1_epi32(mask);
+	i256 result = _mm256_shuffle_epi8(ones, zeros);
+	result = _mm256_permutevar8x32_epi32(result, _mm256_set_epi32(0x7, 0x3, 0, 0, 0, 0, 0, 0));
+	i64 a = _mm256_extract_epi64(result, 3);
+}
+
 void render() {
 	rmt_BeginCPUSample(render, 0);
 	graphics_pipeline.ia.input_layout = transform_vs_simd.in_vertex_size / VECTOR_WIDTH;
@@ -1027,6 +1084,7 @@ void render() {
 	clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
 	clear_depth_stencil_view(0.0);
 	draw_indexed(test_mesh.header.index_count);
+
 	rmt_EndCPUSample();
 }
 
