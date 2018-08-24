@@ -829,6 +829,30 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 	rmt_EndCPUSample();
 }
 
+inline void read_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			p_colors[j * 8 + i] = graphics_pipeline.om.p_colors[fragment_linear_coordinate];
+			p_depths[j * 8 + i] = graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+		}
+	}
+}
+
+inline void write_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			graphics_pipeline.om.p_colors[fragment_linear_coordinate] = p_colors[j * 8 + i];
+			graphics_pipeline.om.p_depth[fragment_linear_coordinate] = p_depths[j * 8 + i];
+		}
+	}
+}
+
 void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 
@@ -839,10 +863,11 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 		CompactedBin bin = p_compacted_bins[bin_index];
 		u32 a_tile_colors[64];
 		f32 a_tile_depths[64];
-		memset(&a_tile_colors, 0, sizeof(u32) * 64);
-		memset(&a_tile_depths, 0, sizeof(f32) * 64);
-
+		//memset(&a_tile_colors, 0, sizeof(u32) * 64);
+		//memset(&a_tile_depths, 0, sizeof(f32) * 64);
 		v2i32 min_bounds = { TILE_WIDTH * (bin.bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin.bin_index / WIDTH_IN_TILES) };
+		read_tile(min_bounds, a_tile_colors, a_tile_depths);
+
 		for(u32 triangle_index = 0; triangle_index < bin.num_triangles_self; ++triangle_index) {
 			TileInfo tile_info = p_fragments[bin.num_triangles_upto + triangle_index];
 			if(tile_info.fragment_mask == 0) continue;
@@ -899,11 +924,6 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 				__m256 perspective_barycentric_coords_x = _mm256_mul_ps(_mm256_mul_ps(barycentric_coords_x, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[1])), denom);
 				// f32 perspective_barycentric_coords.y = barycentric_coords_y * p_setup->a_reciprocal_ws[2] * denom;
 				__m256 perspective_barycentric_coords_y = _mm256_mul_ps(_mm256_mul_ps(barycentric_coords_y, _mm256_set1_ps(triangle.setup.a_reciprocal_ws[2])), denom);
-
-				//v4f32 a_fragment_attributes[3];
-				//for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
-				//	a_fragment_attributes[attribute_index] = interpolate_attribute(triangle.p_attributes + attribute_index, attribute_index ? perspective_barycentric_coords : barycentric_coords, num_attibutes);
-				//}
 
 				__m256 a_fragment_attributes[12];
 				for(i32 attribute_index = 0; attribute_index < num_attibutes; ++attribute_index) {
@@ -973,16 +993,16 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 			}
 		}
 
-		for(int j = 0; j < 8; ++j) {
-			for(int i = 0; i < 8; ++i) {
-				i32 x = min_bounds.x + i;
-				i32 y = min_bounds.y + j;
-				const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-				graphics_pipeline.om.p_colors[fragment_linear_coordinate] = a_tile_colors[j * 8 + i];
-				graphics_pipeline.om.p_depth[fragment_linear_coordinate] = a_tile_depths[j * 8 + i];
-			}
-		}
-
+		//for(int j = 0; j < 8; ++j) {
+		//	for(int i = 0; i < 8; ++i) {
+		//		i32 x = min_bounds.x + i;
+		//		i32 y = min_bounds.y + j;
+		//		const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+		//		graphics_pipeline.om.p_colors[fragment_linear_coordinate] = a_tile_colors[j * 8 + i];
+		//		graphics_pipeline.om.p_depth[fragment_linear_coordinate] = a_tile_depths[j * 8 + i];
+		//	}
+		//}
+		write_tile(min_bounds, a_tile_colors, a_tile_depths);
 	}
 
 	rmt_EndCPUSample();
