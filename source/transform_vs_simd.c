@@ -24,7 +24,7 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	Vs_Input *p_in = ((Vs_Input*)p_vertex_input_data);
 	Vs_Output *p_out = ((Vs_Output*)p_vertex_output_data);
 	ConstantBuffer *p_cb = (ConstantBuffer*)(pp_constant_buffers[cb_id]);
-	Texture2D env_tex = *((Texture2D*)pp_shader_resource_views[0]);
+	//Texture2D env_tex = *((Texture2D*)pp_shader_resource_views[0]);
 
 	v4f256 pos_ws = { p_in->POSITION.x, p_in->POSITION.y, p_in->POSITION.z, _mm256_set1_ps(1.f) };
 	v4f256 pos_cs = m4x4f32_mul_v4f256(&p_cb->clip_from_world, pos_ws);

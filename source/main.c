@@ -133,6 +133,7 @@ typedef struct Setup {
 	EdgeFunction a_edge_functions[3];
 	f32 a_reciprocal_ws[3];
 	f32 one_over_area;
+	f32 max_depth;
 }Setup;
 
 typedef struct Triangle {
@@ -205,6 +206,8 @@ PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
 Bin	a_bins[NUM_BINS];
+f32 a_tile_min_depths[NUM_BINS];
+
 CompactedBin *p_compacted_bins;
 u32  num_compacted_bins;
 
@@ -374,6 +377,92 @@ u32 suprematist_index_buffer[] = {
 // blue triangle {{60,410},{545,614},{67,887}} color {45,44,83}
 // background color {227, 223, 216}
 
+void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, i32 *p_num_vertices) {
+
+	u32 num_out_vertices = 0;
+	u32 num_vertices = *p_num_vertices;
+	u32 num_attributes = graphics_pipeline.vs.output_register_count;
+	static u32 num_generated_clipped_vertices = 0;
+	Vertex a_result_vertices[MAX_NUM_CLIP_VERTICES];
+
+	f32 current_dot = v4f32_dot(plane_normal, (p_clipped_vertices)[0].a_attributes[0]);
+	bool is_current_inside = current_dot > -plane_d;
+
+	for(int i = 0; i < num_vertices; i++) {
+		assert(num_out_vertices < MAX_NUM_CLIP_VERTICES);
+
+		int next = (i + 1) % num_vertices;
+		if(is_current_inside) {
+			a_result_vertices[num_out_vertices++] = p_clipped_vertices[i];
+		}
+
+		float next_dot = v4f32_dot(plane_normal, p_clipped_vertices[next].a_attributes[0]);
+		bool is_next_inside = next_dot > -plane_d;
+		if(is_current_inside != is_next_inside) {
+			assert(num_generated_clipped_vertices < MAX_NUM_CLIP_VERTICES);
+			f32 t = (plane_d + current_dot) / (current_dot - next_dot);
+			for(u32 attribute_index = 0; attribute_index < num_attributes; ++attribute_index) {
+				a_result_vertices[num_out_vertices].a_attributes[attribute_index] = v4f32_add_v4f32(
+					v4f32_mul_f32(p_clipped_vertices[i].a_attributes[attribute_index], (1.f - t)),
+					v4f32_mul_f32(p_clipped_vertices[next].a_attributes[attribute_index], t));
+			}
+			num_out_vertices++;
+		}
+
+		current_dot = next_dot;
+		is_current_inside = is_next_inside;
+	}
+
+	*p_num_vertices = num_out_vertices;
+	memcpy(p_clipped_vertices, a_result_vertices, sizeof(Vertex)*num_out_vertices);
+}
+
+void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
+	//rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
+
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { -1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 1, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= y <==> 0 <= y + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, -1, 0, 1 }), 0, p_num_clipped_vertices);	//  y <= w <==> 0 <= w - y
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, p_num_clipped_vertices);	// -w <= z <==> 0 <= z + w
+	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, -1, 1 }), 0, p_num_clipped_vertices);	//  z <= w <==> 0 <= w - z
+
+	//rmt_EndCPUSample();
+}
+
+inline void read_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			p_colors[j * 8 + i] = graphics_pipeline.om.p_colors[fragment_linear_coordinate];
+			p_depths[j * 8 + i] = graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+		}
+	}
+}
+
+inline void write_tile(u32 bin_index, u32 *p_colors, f32 *p_depths) {
+	v2i32 tile_min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+	f32 min_tile_depth = 1.0;
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			graphics_pipeline.om.p_colors[fragment_linear_coordinate] = p_colors[j * 8 + i];
+			graphics_pipeline.om.p_depth[fragment_linear_coordinate] = p_depths[j * 8 + i];
+			min_tile_depth = MIN(min_tile_depth, p_depths[j * 8 + i]);
+		}
+	}
+	a_tile_min_depths[bin_index] = min_tile_depth;
+}
+
+inline f32 get_tile_minimum_depth(u32 bin_index) {
+	return a_tile_min_depths[bin_index];
+}
+
+
 void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_data) {
 	rmt_BeginCPUSample(input_assambler_stage, 0);
 
@@ -451,59 +540,6 @@ void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_in
 	*pp_vertex_output_data = p_vertex_output_data;
 	
 	rmt_EndCPUSample();
-}
-
-void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, i32 *p_num_vertices ) {
-
-	u32 num_out_vertices = 0;
-	u32 num_vertices = *p_num_vertices;
-	u32 num_attributes = graphics_pipeline.vs.output_register_count;
-	static u32 num_generated_clipped_vertices = 0;
-	Vertex a_result_vertices[MAX_NUM_CLIP_VERTICES];
-
-	f32 current_dot = v4f32_dot(plane_normal, (p_clipped_vertices)[0].a_attributes[0]);
-	bool is_current_inside = current_dot > -plane_d;
-
-	for(int i = 0; i < num_vertices; i++) {
-		assert(num_out_vertices < MAX_NUM_CLIP_VERTICES);
-
-		int next = (i + 1) % num_vertices;
-		if(is_current_inside) {
-			a_result_vertices[num_out_vertices++] = p_clipped_vertices[i];
-		}
-
-		float next_dot = v4f32_dot(plane_normal, p_clipped_vertices[next].a_attributes[0]);
-		bool is_next_inside = next_dot > -plane_d;
-		if(is_current_inside != is_next_inside) {
-			assert(num_generated_clipped_vertices < MAX_NUM_CLIP_VERTICES);
-			f32 t = (plane_d + current_dot) / (current_dot - next_dot);
-			for(u32 attribute_index = 0; attribute_index < num_attributes; ++attribute_index) {
-				a_result_vertices[num_out_vertices].a_attributes[attribute_index] = v4f32_add_v4f32(
-					v4f32_mul_f32(p_clipped_vertices[i].a_attributes[attribute_index], (1.f - t)),
-					v4f32_mul_f32(p_clipped_vertices[next].a_attributes[attribute_index], t));
-			}
-			num_out_vertices++;
-		}
-
-		current_dot = next_dot;
-		is_current_inside = is_next_inside;
-	}
-
-	*p_num_vertices = num_out_vertices;
-	memcpy(p_clipped_vertices, a_result_vertices, sizeof(Vertex)*num_out_vertices);
-}
-
-void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
-	//rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
-
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 1, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= y <==> 0 <= y + w
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0,-1, 0, 1 }), 0, p_num_clipped_vertices);	//  y <= w <==> 0 <= w - y
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, p_num_clipped_vertices);	// -w <= z <==> 0 <= z + w
-	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0,-1, 1 }), 0, p_num_clipped_vertices);	//  z <= w <==> 0 <= w - z
-
-	//rmt_EndCPUSample();
 }
 
 void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output_data, u32 *p_out_triangle_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
@@ -641,6 +677,8 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
 			setup.a_reciprocal_ws[1] = a_reciprocal_ws[1];
 			setup.a_reciprocal_ws[2] = a_reciprocal_ws[2];
+
+			setup.max_depth = MAX3(a_vertex_positions[0].z, a_vertex_positions[1].z, a_vertex_positions[2].z);
 
 			u32 out_triangle_index;
 			#pragma omp atomic capture
@@ -799,12 +837,23 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
 		i256 x = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.x), _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
 		u32 num_triangles_of_current_bin = bin.num_triangles_self;
+		f32 min_tile_depth = get_tile_minimum_depth(bin_index);
 		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
 			u32 triangle_id = p_triangle_ids[bin.num_triangles_upto + triangle_index];
 			TileInfo tile_info;
 			Triangle tri = p_triangles[triangle_id];
 			tile_info.triangle_id = triangle_id;
 			u64 fragment_mask = 0;
+			
+			// Hierarchical-Z test
+			//ASSUMPTION(Cerlet) : Pixel shader does not change the depth of a fragment!
+			f32 max_tri_depth = tri.setup.max_depth;
+			if(max_tri_depth < min_tile_depth) {
+				tile_info.fragment_mask = fragment_mask;
+				(*pp_tile_infos)[bin.num_triangles_upto + triangle_index] = tile_info;
+				continue;
+			}
+
 			i256 y = _mm256_set1_epi32(min_bounds.y);
 			for(i32 i = 0; i < 8; ++i) {
 				i256 alpha = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[0].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
@@ -836,30 +885,6 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 		}	
 	}
 	rmt_EndCPUSample();
-}
-
-inline void read_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
-	for(int j = 0; j < 8; ++j) {
-		for(int i = 0; i < 8; ++i) {
-			i32 x = tile_min_bounds.x + i;
-			i32 y = tile_min_bounds.y + j;
-			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-			p_colors[j * 8 + i] = graphics_pipeline.om.p_colors[fragment_linear_coordinate];
-			p_depths[j * 8 + i] = graphics_pipeline.om.p_depth[fragment_linear_coordinate];
-		}
-	}
-}
-
-inline void write_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
-	for(int j = 0; j < 8; ++j) {
-		for(int i = 0; i < 8; ++i) {
-			i32 x = tile_min_bounds.x + i;
-			i32 y = tile_min_bounds.y + j;
-			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-			graphics_pipeline.om.p_colors[fragment_linear_coordinate] = p_colors[j * 8 + i];
-			graphics_pipeline.om.p_depth[fragment_linear_coordinate] = p_depths[j * 8 + i];
-		}
-	}
 }
 
 void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles) {
@@ -982,7 +1007,7 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 				// ASSUMPTION(Cerlet): Pixel shader does not change the depth of the fragment! 
 				__m256 fragment_z = a_fragment_attributes[2];
 				__m256 depth = _mm256_load_ps(a_tile_depths + fragment_y_index*8);
-				__m256 depth_test = _mm256_cmp_ps(fragment_z, depth, _CMP_GE_OQ);
+				__m256 depth_test = _mm256_cmp_ps(fragment_z, depth, _CMP_GE_OQ); // We use inverse Z
 				mask = _mm256_and_si256(_mm256_castps_si256(depth_test), mask);
 				if(_mm256_testz_si256(mask, mask) == 1) continue;
 
@@ -1001,7 +1026,7 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 			}
 		}
 
-		write_tile(min_bounds, a_tile_colors, a_tile_depths);
+		write_tile(bin.bin_index, a_tile_colors, a_tile_depths);
 	}
 
 	rmt_EndCPUSample();
@@ -1030,7 +1055,6 @@ void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_locatio
 	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids, &total_triangle_count_in_bins);
 
 	TileInfo *p_tile_infos = NULL;
-	//run_rasterizer_omp(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
 	run_rasterizer_omp_simd(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
 
 	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles);
@@ -1065,6 +1089,7 @@ void clear_depth_stencil_view(const f32 depth) {
 	while(depth_buffer_texel_count--) {
 		*p_depth++ = depth;
 	}
+	memset(a_tile_min_depths, 1.0, sizeof(f32)*NUM_BINS);
 	rmt_EndCPUSample();
 }
 
@@ -1182,7 +1207,7 @@ void init() {
 		camera.near_plane = 0.01;
 		camera.far_plane = 100.01;
 
-		// clip from view transformation, view space : y - up, left-handed
+		// clip from view transformation, view space : y - up, x - right, left-handed
 		float fov_y_angle_rad = TO_RADIANS(camera.fov_y_angle_deg);
 		float aspect_ratio = (float)WIDTH / HEIGHT;
 		float scale_y = (float)(1.0 / tan(fov_y_angle_rad / 2.0));
