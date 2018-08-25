@@ -223,6 +223,11 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	switch(msg) {
 		case WM_PAINT:
 			h_device_context = BeginPaint(h_window, &paint_struct);
+
+			HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
+			HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, frame_width, frame_height);
+			HBITMAP old_backbuffer = (HBITMAP)SelectObject(backbuffer_dc, backbuffer);
+
 #if 0
 			BITMAPINFO info = { 0 };
 			ZeroMemory(&info, sizeof(BITMAPINFO));
@@ -250,7 +255,17 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 			bmpheader.bV5Intent = LCS_GM_BUSINESS;
 			info.bmiHeader = bmpheader;
 #endif
-			StretchDIBits(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+
+			StretchDIBits(backbuffer_dc, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+			TextOutA(backbuffer_dc, 0 /* X */, 0 /* Y */, "Blah de blah de blah", 20 /* Number of chars */);
+
+			BitBlt(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, backbuffer_dc, 0, 0, SRCCOPY);
+
+			// all done, now we need to cleanup
+			SelectObject(backbuffer_dc, old_backbuffer); // select back original bitmap
+			DeleteObject(backbuffer); // delete bitmap since it is no longer required
+			DeleteDC(backbuffer_dc);   // delete memory DC since it is no longer required
+			
 			EndPaint(h_window, &paint_struct);
 			break;
 		case WM_KEYDOWN: {
@@ -1143,10 +1158,13 @@ void render() {
 	rmt_EndCPUSample();
 }
 
-void present(HWND h_window) {
+void present(HWND h_window, f32 delta_t) {
 	rmt_BeginCPUSample(present, 0);
+	char buf[32];
+	sprintf(buf,"frame time: %.5f ms", delta_t);
+	SetWindowTextA(h_window, buf);
 	InvalidateRect(h_window, NULL, FALSE);
-	UpdateWindow(h_window);
+	//UpdateWindow(h_window);
 	rmt_EndCPUSample();
 }
 
@@ -1258,11 +1276,12 @@ void init() {
 	}
 }
 
-void update() {
+void update(f32 delta_t) {
 	rmt_BeginCPUSample(update, 0);
 
 	f32 delta_pitch_rad, delta_yaw_rad;
-	static f32 mouse_pos_scale = 0.0025f;
+	f32 mouse_pos_scale = 0.00025f *  delta_t;
+
 	if(input.is_right_mouse_button_pressed) {
 		delta_pitch_rad = (input.mouse_pos.y - input.last_mouse_pos.y) * mouse_pos_scale;
 		delta_yaw_rad = (input.mouse_pos.x - input.last_mouse_pos.x) * mouse_pos_scale;
@@ -1285,13 +1304,13 @@ void update() {
 	pitch_rad = max(-PI_OVER_TWO, pitch_rad);
 	camera.pitch_rad = pitch_rad;
 
-	static float move_speed_mps = 10.0f;
-	static float speed_scale = .06f;
-	static float delta_time_s = 0.016666f;
+	static float move_speed_mps = 0.01f;
 
-	float forward = move_speed_mps * speed_scale * ((input.is_w_pressed ? delta_time_s : 0.0f) + (input.is_s_pressed ? -delta_time_s : 0.0f));
-	float strafe = move_speed_mps * speed_scale * ((input.is_d_pressed ? delta_time_s : 0.0f) + (input.is_a_pressed ? -delta_time_s : 0.0f));
-	float ascent = move_speed_mps * speed_scale * ((input.is_e_pressed ? delta_time_s : 0.0f) + (input.is_q_pressed ? -delta_time_s : 0.0f));
+	float delta_time_ms = delta_t;
+
+	float forward = move_speed_mps * ((input.is_w_pressed ? delta_time_ms : 0.0f) + (input.is_s_pressed ? -delta_time_ms : 0.0f));
+	float strafe = move_speed_mps  * ((input.is_d_pressed ? delta_time_ms : 0.0f) + (input.is_a_pressed ? -delta_time_ms : 0.0f));
+	float ascent = move_speed_mps  * ((input.is_e_pressed ? delta_time_ms : 0.0f) + (input.is_q_pressed ? -delta_time_ms : 0.0f));
 	
 	float cos_pitch = cos(-camera.pitch_rad);
 	float sin_pitch = sin(-camera.pitch_rad);
@@ -1386,17 +1405,26 @@ int CALLBACK WinMain(
 	init();
 
 	MSG msg = { 0 };
+	f64 delta_time_ms = 0.0;
+	LARGE_INTEGER performance_frequency;
+	LARGE_INTEGER start_frame_time = {0};
+	LARGE_INTEGER end_frame_time = {0};
+	QueryPerformanceFrequency(&performance_frequency);
+	f64 counter_scale = 1000.0 / performance_frequency.QuadPart;
 	while(msg.message != WM_QUIT) {
 		if(PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
 			TranslateMessage(&msg);
 			DispatchMessageA(&msg);
 		}
 		else {
+			QueryPerformanceCounter(&start_frame_time);
 			rmt_BeginCPUSample(Malevich, 0);
-			update();
+			update(delta_time_ms);
 			render();
-			present(h_window);
+			present(h_window, delta_time_ms);
 			rmt_EndCPUSample();
+			QueryPerformanceCounter(&end_frame_time);
+			delta_time_ms = ((end_frame_time.QuadPart - start_frame_time.QuadPart) * counter_scale);
 		}
 	}
 
