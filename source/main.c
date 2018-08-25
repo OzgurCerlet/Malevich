@@ -197,9 +197,10 @@ typedef struct Input {
 	bool is_w_pressed;
 } Input;
 
-Mesh test_mesh;
-Texture2D scene_tex;
-Texture2D env_tex;
+Mesh mesh_house;
+Mesh mesh_sky;
+Texture2D tex_house;
+Texture2D tex_sky;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
@@ -219,15 +220,17 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	switch(msg) {
 		case WM_PAINT:
 			h_device_context = BeginPaint(h_window, &paint_struct);
-			//BITMAPINFO info = { 0 };
-			//ZeroMemory(&info, sizeof(BITMAPINFO));
-			//info.bmiHeader.biBitCount = 32;
-			//info.bmiHeader.biWidth = frame_width;
-			//info.bmiHeader.biHeight = -(i32)(frame_height); // for top_down images we need to negate the height
-			//info.bmiHeader.biPlanes = 1;
-			//info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			//info.bmiHeader.biCompression = BI_RGB;
-			V5BMPINFO bmpinfo = { 0 };
+#if 0
+			BITMAPINFO info = { 0 };
+			ZeroMemory(&info, sizeof(BITMAPINFO));
+			info.bmiHeader.biBitCount = 32;
+			info.bmiHeader.biWidth = frame_width;
+			info.bmiHeader.biHeight = -(i32)(frame_height); // for top_down images we need to negate the height
+			info.bmiHeader.biPlanes = 1;
+			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			info.bmiHeader.biCompression = BI_RGB;
+#else
+			V5BMPINFO info = { 0 };
 			BITMAPV5HEADER bmpheader = { 0 };
 			bmpheader.bV5Size = sizeof(BITMAPV5HEADER);
 			bmpheader.bV5Width = frame_width;
@@ -242,9 +245,9 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 			bmpheader.bV5AlphaMask = 0xFF000000;
 			bmpheader.bV5CSType = LCS_WINDOWS_COLOR_SPACE; // LCS_WINDOWS_COLOR_SPACE
 			bmpheader.bV5Intent = LCS_GM_BUSINESS;
-			bmpinfo.bmiHeader = bmpheader;
-
-			StretchDIBits(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &bmpinfo, DIB_RGB_COLORS, SRCCOPY);
+			info.bmiHeader = bmpheader;
+#endif
+			StretchDIBits(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
 			EndPaint(h_window, &paint_struct);
 			break;
 		case WM_KEYDOWN: {
@@ -378,9 +381,10 @@ void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_
 	assert(graphics_pipeline.ia.primitive_topology == PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 	// ASSUMPTION(cerlet): In Direct3D, index buffers are bounds checked!, we assume our index buffers are properly bounded.
+	// ASSUMPTION(cerlet): index_count is divisible by 8
+	assert((index_count & 0b111) == 0); 
+	
 	// TODO(cerlet): Implement some kind of post-transform vertex cache.
-	assert((index_count & 0b111) == 0); // ASSUMPTION(cerlet): index_count is divisible by 8
-
 	u32 vertex_count = index_count;
 	u32 per_vertex_input_data_size = graphics_pipeline.ia.input_layout;
 	void *p_vertex_input_data = malloc(vertex_count*per_vertex_input_data_size);
@@ -490,7 +494,7 @@ void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, 
 }
 
 void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
-	rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
+	//rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
 
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) {-1, 0, 0, 1 }), 0, p_num_clipped_vertices);	//  x <= w <==> 0 <= w - x
@@ -499,7 +503,7 @@ void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0, 1, 1 }), 0, p_num_clipped_vertices);	// -w <= z <==> 0 <= z + w
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 0, 0,-1, 1 }), 0, p_num_clipped_vertices);	//  z <= w <==> 0 <= w - z
 
-	rmt_EndCPUSample();
+	//rmt_EndCPUSample();
 }
 
 void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output_data, u32 *p_out_triangle_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
@@ -621,6 +625,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 			if(signed_area == 0) { continue; } // degenerate triangle 
 			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
 
+			// BUG(cerlet): Backface culling creates cracks in the rasterization!
 			// face culling with winding order
 			if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling
 
@@ -814,8 +819,12 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 				gamma = _mm256_add_epi32(gamma, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[2].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				gamma = _mm256_add_epi32(gamma, _mm256_set1_epi32(tri.setup.a_edge_functions[2].c));
 
-				i256 mask = _mm256_cmpgt_epi32((_mm256_or_si256(_mm256_or_si256(alpha, beta), gamma)), _mm256_setzero_si256());
-				u32 mask32 = _mm256_movemask_epi8(mask);
+				// TODO(cerlet): Implement top-left fill rule! 
+				i256 mask_inside = _mm256_cmpgt_epi32((_mm256_or_si256(_mm256_or_si256(alpha, beta), gamma)), _mm256_setzero_si256());
+				//i256 mask_on_edges = _mm256_cmpeq_epi32((_mm256_or_si256(_mm256_or_si256(alpha, beta), gamma)), _mm256_setzero_si256());
+				//i256 mask = _mm256_or_si256(mask_inside, mask_on_edges);
+				//u32 mask32 = _mm256_movemask_epi8(mask);
+				u32 mask32 = _mm256_movemask_epi8(mask_inside);
 				// OPTIMIZATION(cerlet): There should be a fast way to do this!
 				u8 mask8 =	(((mask32 >> 31) & 1) << 7) + (((mask32 >> 27) & 1) << 6) + (((mask32 >> 23) & 1) << 5) + (((mask32 >> 19) & 1) << 4) + 
 							(((mask32 >> 15) & 1) << 3) + (((mask32 >> 11) & 1) << 2) + (((mask32 >> 7) & 1) << 1) + (((mask32 >>  3) & 1) << 0);
@@ -860,11 +869,10 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 
 	#pragma omp parallel for schedule(dynamic,32)
 	for(u32 bin_index = 0; bin_index < num_compacted_bins; ++bin_index) {
+		
 		CompactedBin bin = p_compacted_bins[bin_index];
 		u32 a_tile_colors[64];
 		f32 a_tile_depths[64];
-		//memset(&a_tile_colors, 0, sizeof(u32) * 64);
-		//memset(&a_tile_depths, 0, sizeof(f32) * 64);
 		v2i32 min_bounds = { TILE_WIDTH * (bin.bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin.bin_index / WIDTH_IN_TILES) };
 		read_tile(min_bounds, a_tile_colors, a_tile_depths);
 
@@ -993,15 +1001,6 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 			}
 		}
 
-		//for(int j = 0; j < 8; ++j) {
-		//	for(int i = 0; i < 8; ++i) {
-		//		i32 x = min_bounds.x + i;
-		//		i32 y = min_bounds.y + j;
-		//		const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-		//		graphics_pipeline.om.p_colors[fragment_linear_coordinate] = a_tile_colors[j * 8 + i];
-		//		graphics_pipeline.om.p_depth[fragment_linear_coordinate] = a_tile_depths[j * 8 + i];
-		//	}
-		//}
 		write_tile(min_bounds, a_tile_colors, a_tile_depths);
 	}
 
@@ -1080,30 +1079,41 @@ void test() {
 
 void render() {
 	rmt_BeginCPUSample(render, 0);
+
+	const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
+	clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
+	clear_depth_stencil_view(0.0);
+
+	// draw house
 	graphics_pipeline.ia.input_layout = transform_vs_simd.in_vertex_size / VECTOR_WIDTH;
 	
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-	graphics_pipeline.ia.p_index_buffer = test_mesh.p_index_buffer;
-	graphics_pipeline.ia.p_vertex_buffer = test_mesh.p_vertex_buffer;
+	graphics_pipeline.ia.p_index_buffer = mesh_house.p_index_buffer;
+	graphics_pipeline.ia.p_vertex_buffer = mesh_house.p_vertex_buffer;
 
 	graphics_pipeline.vs.output_register_count = transform_vs_simd.out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
 	graphics_pipeline.vs.shader = transform_vs_simd.vs_main;
 	
-	graphics_pipeline.vs.p_shader_resource_views[0] = &env_tex;
+	//graphics_pipeline.vs.p_shader_resource_views[0] = &env_tex;
 	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 
 	Viewport viewport = { 0.f,0.f,(f32)frame_width,(f32)frame_height,0.f,1.f };
 	graphics_pipeline.rs.viewport = viewport;
 
 	graphics_pipeline.ps.shader = passthrough_ps.ps_main;
-	graphics_pipeline.ps.p_shader_resource_views[0] = &scene_tex;
+	graphics_pipeline.ps.p_shader_resource_views[0] = &tex_house;
 
 	graphics_pipeline.om.p_colors = &frame_buffer[0][0];
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
-	const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
-	clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
-	clear_depth_stencil_view(0.0);
-	draw_indexed(test_mesh.header.index_count);
+	
+	draw_indexed(mesh_house.header.index_count);
+
+	// draw sky
+	graphics_pipeline.ia.p_index_buffer = mesh_sky.p_index_buffer;
+	graphics_pipeline.ia.p_vertex_buffer = mesh_sky.p_vertex_buffer;
+	graphics_pipeline.ps.p_shader_resource_views[0] = &tex_sky;
+
+	draw_indexed(mesh_sky.header.index_count);
 
 	rmt_EndCPUSample();
 }
@@ -1115,55 +1125,47 @@ void present(HWND h_window) {
 	rmt_EndCPUSample();
 }
 
-void init() {
-	{ // Load mesh
+void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
+	void *p_data = NULL;
+	OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file(p_mesh_name, &(p_mesh->header), &p_data);
+	if(result != OCTARINE_MESH_OK) { assert(false); };
 
-		void *p_data = NULL;
-		OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/toon_house_mesh.octrn", &test_mesh.header, &p_data);
-		//OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file("../assets/sphere_x4.octrn", &test_mesh.header, &p_data);
-		if(result != OCTARINE_MESH_OK) { assert(false); };
+	u32 vertex_size = sizeof(float) * 8;
+	u32 vertex_buffer_size = p_mesh->header.vertex_count * vertex_size;
 
-		u32 vertex_size = sizeof(float) * 8;
-		u32 vertex_buffer_size = test_mesh.header.vertex_count * vertex_size;
-		u32 index_buffer_size = test_mesh.header.index_count * sizeof(u32);
+	p_mesh->p_vertex_buffer = p_data;
+	p_mesh->p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
+}
 
-		test_mesh.p_vertex_buffer = p_data;
-		test_mesh.p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
-	}
+void load_texture(const char *p_tex_name, Texture2D *p_tex) {
+	OctarineImageHeader header;
+	OCTARINE_IMAGE result = octarine_image_read_from_file(p_tex_name, &header, &(p_tex->p_data));
+	if(result != OCTARINE_IMAGE_OK) { assert(false); };
 
-	{ // Load scene texture
+	p_tex->width = header.width;
+	p_tex->height = header.height;
 
-		OctarineImageHeader header;
-		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/malevich_scene_colors.octrn", &header, &scene_tex.p_data);
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/toon_house_tex.octrn", &header, &scene_tex.p_data);
-		if(result != OCTARINE_IMAGE_OK) { assert(false); };
-
-		scene_tex.width = header.width;
-		scene_tex.height = header.height;
-
-		for(i32 t = 0; t < header.height; ++t) {
-			for(i32 s = 0; s < header.width; ++s) {
-				v4f32 texel = decode_u32_as_color(get_texel_u(scene_tex, s, t));
-				texel.x = srgb_to_linear(texel.x);
-				texel.y = srgb_to_linear(texel.y);
-				texel.z = srgb_to_linear(texel.z);
-				texel.w = srgb_to_linear(texel.w);
-				((u32*)scene_tex.p_data)[t*scene_tex.width + s] = encode_color_as_u32(texel);
-			}
+	// if texture is in srgb color space get rid of gamma mapping
+	for(i32 t = 0; t < header.height; ++t) {
+		for(i32 s = 0; s < header.width; ++s) {
+			v4f32 texel = decode_u32_as_color(get_texel_u(*p_tex, s, t));
+			texel.x = srgb_to_linear(texel.x);
+			texel.y = srgb_to_linear(texel.y);
+			texel.z = srgb_to_linear(texel.z);
+			texel.w = srgb_to_linear(texel.w);
+			((u32*)p_tex->p_data)[t*p_tex->width + s] = encode_color_as_u32(texel);
 		}
-
 	}
+}
 
-	{ // Load texture
+void init() {
+	{ // Load Assets
 
-		OctarineImageHeader header;
-		OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/ninomaru_teien_panorama_irradiance.octrn", &header, &env_tex.p_data);
-		//OCTARINE_IMAGE result = octarine_image_read_from_file("../assets/panorama_test.octrn", &header, &env_tex.p_data);
-		if(result != OCTARINE_IMAGE_OK) { assert(false); };
+		load_mesh("../assets/toon_house_mesh.octrn", &mesh_house);
+		load_mesh("../assets/toon_sky_mesh.octrn", &mesh_sky);
 
-		env_tex.width = header.width;
-		env_tex.height = header.height;
-
+		load_texture("../assets/toon_house_tex.octrn", &tex_house);
+		load_texture("../assets/toon_sky_tex.octrn", &tex_sky);
 	}
 
 	{ // Init Camera
@@ -1333,7 +1335,7 @@ int CALLBACK WinMain(
 		window_class.style = CS_HREDRAW | CS_VREDRAW;
 		window_class.lpfnWndProc = window_proc;
 		window_class.hInstance = hInstance;
-		window_class.hIcon = (HICON)(LoadImage(NULL,"suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+		window_class.hIcon = (HICON)(LoadImage(NULL,"../config/suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
 		window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
 		window_class.hbrBackground = CreateSolidBrush(RGB(227, 223, 216));// (HBRUSH)(COLOR_WINDOW + 1);
 		window_class.lpszClassName = p_window_class_name;
