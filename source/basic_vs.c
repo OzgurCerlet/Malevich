@@ -39,4 +39,4 @@ static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data,
 	p_out->UV = (v2f256) { p_in->UV.x, p_in->UV.y };
 }
 
-VertexShader transform_vs_simd = { sizeof(Vs_Input), sizeof(Vs_Output), vs_main };
+VertexShader basic_vs = { sizeof(Vs_Input), sizeof(Vs_Output), vs_main };

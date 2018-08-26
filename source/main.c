@@ -16,17 +16,14 @@ typedef int DXGI_FORMAT;
 
 #pragma comment(lib, "octarine_mesh.lib")
 #pragma comment(lib, "octarine_image.lib")
+#pragma comment(lib, "svml_disp.lib")
 
-#define WIDTH	1024 //820;
-#define HEIGHT	512 //1000;
-#define STRECTH_FACTOR 1
+#define WIDTH	1200 //560;
+#define HEIGHT	720 //704;
 
 #define TILE_WIDTH	8 
 #define TILE_HEIGHT 8 
-
 #define VECTOR_WIDTH 8
-#define TRIANGLE_COUNT_FACTOR 1
-#define MAX_TRIANGLE_COUNT_PER_BIN 256
 
 #define WIDTH_IN_TILES	(WIDTH/TILE_WIDTH)
 #define HEIGHT_IN_TILES (HEIGHT/TILE_HEIGHT)
@@ -42,12 +39,14 @@ f32 depth_buffer[WIDTH][HEIGHT];
 #define NUM_SUB_PIXEL_PRECISION_BITS 4
 #define PIXEL_SHADER_INPUT_REGISTER_COUNT 4
 #define COMMONSHADER_CONSTANT_BUFFER_HW_SLOT_COUNT 16
-#define COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT 128
+#define COMMONSHADER_INPUT_RESOURCE_REGISTER_COUNT 16
 
-extern VertexShader transform_vs;
-extern VertexShader transform_vs_simd;
+#define MAX_OBJECT_COUNT_PER_SCENE 8
+
 extern VertexShader passthrough_vs;
 extern PixelShader passthrough_ps;
+extern VertexShader basic_vs;
+extern PixelShader basic_ps;
 
 typedef struct MeshHeader {
 	uint32_t size;
@@ -111,13 +110,6 @@ typedef struct Pipeline {
 	PS ps;
 	OM om;
 } Pipeline;
-
-Pipeline graphics_pipeline;
-
-typedef struct SuprematistVertex {
-	v4f32 pos;
-	v3f32 color;
-} SuprematistVertex;
 
 typedef struct Vertex {
 	v4f32 a_attributes[PIXEL_SHADER_INPUT_REGISTER_COUNT];
@@ -196,25 +188,133 @@ typedef struct Input {
 	bool is_q_pressed;
 	bool is_s_pressed;
 	bool is_w_pressed;
+	bool is_space_pressed;
 } Input;
 
-Mesh mesh_house;
-Mesh mesh_sky;
-Texture2D tex_house;
-Texture2D tex_sky;
+typedef struct Stats {
+	f32 frame_time;
+	u32 vertex_count;
+	u32 input_triangle_count;
+	u32 assembled_triangle_count;
+	u32 active_bin_count;
+	u32 total_triangle_count_in_bins;
+} Stats;
+
+typedef struct Scene {
+	Mesh a_meshes[MAX_OBJECT_COUNT_PER_SCENE];
+	Texture2D a_textures[MAX_OBJECT_COUNT_PER_SCENE];
+	VertexShader *p_vs;
+	PixelShader *p_ps;
+	u32 num_objects;
+}Scene;
+
+Pipeline graphics_pipeline;
+HWND h_window;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
 Bin	a_bins[NUM_BINS];
 f32 a_tile_min_depths[NUM_BINS];
+Stats stats;
 
-CompactedBin *p_compacted_bins;
-u32  num_compacted_bins;
+typedef struct SuprematistVertex {
+	v4f32 pos;
+	v3f32 color;
+	f32 _pad;
+} SuprematistVertex;
 
-typedef struct tagV5BMPINFO {
-	BITMAPV5HEADER bmiHeader;
-	DWORD        bmiColors[3];
-} V5BMPINFO;
+SuprematistVertex suprematist_vertex_buffer[] = {
+	{ { 0.34107, 0.12215, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
+	{ { 0.95357, 0.12500, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
+	{ { 0.96250, 0.86931, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
+	{ { 0.33928, 0.86505, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
+	{ { 0.09464, 0.12500, 0.75, 1.0 }, { 0.14100, 0.29000, 0.60800 }, {0.0} },
+	{ { 0.69285, 0.39772, 0.75, 1.0 }, { 0.14100, 0.29000, 0.60800 }, {0.0} },
+	{ { 0.09107, 0.60937, 0.75, 1.0 }, { 0.14100, 0.29000, 0.60800 }, {0.0} },
+	{ { 0.00000, 0.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
+	{ { 1.00000, 0.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
+	{ { 1.00000, 1.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
+	{ { 0.00000, 1.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
+};
+
+u32 suprematist_index_buffer[] = {
+	0, 1, 2,
+	2, 3, 0,
+	4, 5, 6,
+	7, 8, 9,
+	9, 10, 7,
+	0, 0, 0,
+	0, 0, 0,
+	0, 0, 0,
+};
+
+Scene scene_ftm;
+Scene scene_toon;
+Scene scene_suprematism;
+
+//----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
+
+void paint_window(HDC h_device_context) {
+	HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
+	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, frame_width, frame_height);
+	HBITMAP old_backbuffer = (HBITMAP)SelectObject(backbuffer_dc, backbuffer);
+
+	typedef struct tagV5BMPINFO {
+		BITMAPV5HEADER bmiHeader;
+		DWORD        bmiColors[3];
+	} V5BMPINFO;
+
+	V5BMPINFO info = { 0 };
+	BITMAPV5HEADER bmpheader = { 0 };
+	bmpheader.bV5Size = sizeof(BITMAPV5HEADER);
+	bmpheader.bV5Width = frame_width;
+	bmpheader.bV5Height = -(i32)(frame_height); // for top_down images we need to negate the height
+	bmpheader.bV5Planes = 1;
+	bmpheader.bV5BitCount = 32;
+	bmpheader.bV5Compression = BI_BITFIELDS;
+	bmpheader.bV5SizeImage = frame_width * frame_height * 4;
+	bmpheader.bV5RedMask = 0x00FF0000;
+	bmpheader.bV5GreenMask = 0x0000FF00;
+	bmpheader.bV5BlueMask = 0x000000FF;
+	bmpheader.bV5AlphaMask = 0xFF000000;
+	bmpheader.bV5CSType = LCS_WINDOWS_COLOR_SPACE; // LCS_WINDOWS_COLOR_SPACE
+	bmpheader.bV5Intent = LCS_GM_BUSINESS;
+	info.bmiHeader = bmpheader;
+
+	// Draw to bitmap
+	StretchDIBits(backbuffer_dc, 0, 0, frame_width, frame_height, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+	SetBkMode(backbuffer_dc, TRANSPARENT);
+	char gui_buf[64];
+	int y = 0;
+	sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "vertex count: %d", stats.vertex_count);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "triangle count(input/assembled): %d, %d", stats.input_triangle_count, stats.assembled_triangle_count);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "active bin count: %d", stats.active_bin_count);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "avg triangle count per bin: %.5f", ((f32)stats.total_triangle_count_in_bins) / stats.active_bin_count);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "cam pos: %.5f, %.5f, %.5f", camera.pos.x, camera.pos.y, camera.pos.z);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	y += 14;
+	sprintf(gui_buf, "cam angles: %.5f, %.5f ", camera.yaw_rad, camera.pitch_rad);
+	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+
+	// Blit bitmap
+	BitBlt(h_device_context, 0, 0, frame_width, frame_height, backbuffer_dc, 0, 0, SRCCOPY);
+
+	// all done, now we need to cleanup
+	SelectObject(backbuffer_dc, old_backbuffer); // select back original bitmap
+	DeleteObject(backbuffer);
+	DeleteDC(backbuffer_dc);
+}
 
 LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_param)
 {
@@ -223,49 +323,7 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	switch(msg) {
 		case WM_PAINT:
 			h_device_context = BeginPaint(h_window, &paint_struct);
-
-			HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
-			HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, frame_width, frame_height);
-			HBITMAP old_backbuffer = (HBITMAP)SelectObject(backbuffer_dc, backbuffer);
-
-#if 0
-			BITMAPINFO info = { 0 };
-			ZeroMemory(&info, sizeof(BITMAPINFO));
-			info.bmiHeader.biBitCount = 32;
-			info.bmiHeader.biWidth = frame_width;
-			info.bmiHeader.biHeight = -(i32)(frame_height); // for top_down images we need to negate the height
-			info.bmiHeader.biPlanes = 1;
-			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			info.bmiHeader.biCompression = BI_RGB;
-#else
-			V5BMPINFO info = { 0 };
-			BITMAPV5HEADER bmpheader = { 0 };
-			bmpheader.bV5Size = sizeof(BITMAPV5HEADER);
-			bmpheader.bV5Width = frame_width;
-			bmpheader.bV5Height = -(i32)(frame_height); // for top_down images we need to negate the height
-			bmpheader.bV5Planes = 1;
-			bmpheader.bV5BitCount = 32;
-			bmpheader.bV5Compression = BI_BITFIELDS;
-			bmpheader.bV5SizeImage = frame_width * frame_height * 4;
-			bmpheader.bV5RedMask = 0x00FF0000;
-			bmpheader.bV5GreenMask = 0x0000FF00;
-			bmpheader.bV5BlueMask = 0x000000FF;
-			bmpheader.bV5AlphaMask = 0xFF000000;
-			bmpheader.bV5CSType = LCS_WINDOWS_COLOR_SPACE; // LCS_WINDOWS_COLOR_SPACE
-			bmpheader.bV5Intent = LCS_GM_BUSINESS;
-			info.bmiHeader = bmpheader;
-#endif
-
-			StretchDIBits(backbuffer_dc, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
-			TextOutA(backbuffer_dc, 0 /* X */, 0 /* Y */, "Blah de blah de blah", 20 /* Number of chars */);
-
-			BitBlt(h_device_context, 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR, backbuffer_dc, 0, 0, SRCCOPY);
-
-			// all done, now we need to cleanup
-			SelectObject(backbuffer_dc, old_backbuffer); // select back original bitmap
-			DeleteObject(backbuffer); // delete bitmap since it is no longer required
-			DeleteDC(backbuffer_dc);   // delete memory DC since it is no longer required
-			
+			paint_window(h_device_context);
 			EndPaint(h_window, &paint_struct);
 			break;
 		case WM_KEYDOWN: {
@@ -308,26 +366,87 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	return 0;
 }
 
-void error_win32(const char* func_name, DWORD last_error) {
-	void* error_msg = NULL;
-	char display_msg[256] = { 0 };
+//----------------------------------------  UTILITY  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
+void error(const char *p_func_name, const char *p_message) {
+	char display_msg[512] = { 0 };
+
+	strcat(display_msg, p_func_name);
+	strcat(display_msg, " failed with error: ");
+	strcat(display_msg, p_message);
+
+	int choice = MessageBoxA(NULL, display_msg, NULL, MB_ABORTRETRYIGNORE | MB_ICONERROR);
+	switch(choice) {
+		case IDABORT: exit(-1); break;
+		case IDRETRY: DebugBreak(); break;
+		case IDIGNORE: return;
+		default: return;
+	}
+}
+
+void error_win32(const char* p_func_name, DWORD last_error) {
+	void *p_error_msg = NULL;
 	FormatMessageA(
 		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
 		NULL,
 		last_error,
 		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		(char*)&error_msg,
+		(char*)&p_error_msg,
 		0,
 		NULL);
 
-	strcat(display_msg, func_name);
-	strcat(display_msg, " failed with error: ");
-	strcat(display_msg, (const char*)error_msg);
-
-	MessageBoxA(NULL, display_msg, NULL, MB_OK | MB_ICONERROR);
-	LocalFree(error_msg);
+	error(p_func_name, (char*)p_error_msg);
+	LocalFree(p_error_msg);
 }
+
+bool is_avx_supported() {
+	// http://insufficientlycomplicated.wordpress.com/2011/11/07/detecting-intel-advanced-vector-extensions-avx-in-visual-studio/
+	int cpuinfo[4];
+	__cpuid(cpuinfo, 1);
+	bool is_avx_supported = cpuinfo[2] & (1 << 28) || false;
+	bool is_osx_save_supported = cpuinfo[2] & (1 << 27) || false;
+	if(is_osx_save_supported && is_avx_supported){
+		// _XCR_XFEATURE_ENABLED_MASK = 0
+		unsigned long long xcr_feature_mask = _xgetbv(0);
+		is_avx_supported = (xcr_feature_mask & 0x6) == 0x6;
+	}
+	return is_avx_supported;
+}
+
+void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
+	void *p_data = NULL;
+	OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file(p_mesh_name, &(p_mesh->header), &p_data);
+	if(result != OCTARINE_MESH_OK) { assert(false); };
+
+	u32 vertex_size = sizeof(float) * 8;
+	u32 vertex_buffer_size = p_mesh->header.vertex_count * vertex_size;
+
+	p_mesh->p_vertex_buffer = p_data;
+	p_mesh->p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
+}
+
+void load_texture(const char *p_tex_name, Texture2D *p_tex) {
+	OctarineImageHeader header;
+	OCTARINE_IMAGE result = octarine_image_read_from_file(p_tex_name, &header, &(p_tex->p_data));
+	if(result != OCTARINE_IMAGE_OK) { assert(false); };
+
+	p_tex->width = header.width;
+	p_tex->height = header.height;
+
+	// if texture is in srgb color space get rid of gamma mapping
+	for(i32 t = 0; t < header.height; ++t) {
+		for(i32 s = 0; s < header.width; ++s) {
+			v4f32 texel = decode_u32_as_color(get_texel_u(*p_tex, s, t));
+			texel.x = srgb_to_linear(texel.x);
+			texel.y = srgb_to_linear(texel.y);
+			texel.z = srgb_to_linear(texel.z);
+			texel.w = srgb_to_linear(texel.w);
+			((u32*)p_tex->p_data)[t*p_tex->width + s] = encode_color_as_u32(texel);
+		}
+	}
+}
+
+//----------------------------------------  PIPELINE  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
 inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32 y0, i32 x1, i32 y1) {
 	i32 a = y0 - y1;
@@ -343,54 +462,37 @@ inline void set_edge_function(EdgeFunction *p_edge, i32 signed_area, i32 x0, i32
 	p_edge->c = c;
 }
 
-// In this context, barycentric coords (u,v,w) = areal coordinates (A1/A,A2/A,A0/A) => u+v+w = 1;
-inline v2f32 compute_barycentric_coords(const Setup *p_setup) {
-	//v2f32 barycentric_coords;
-	//barycentric_coords.x = (float)(p_setup->a_signed_distances[1] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
-	//barycentric_coords.y = (float)(p_setup->a_signed_distances[2] >> (NUM_SUB_PIXEL_PRECISION_BITS * 2)) * p_setup->one_over_area;
-
-	//return barycentric_coords;
+inline void read_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			p_colors[j * 8 + i] = graphics_pipeline.om.p_colors[fragment_linear_coordinate];
+			p_depths[j * 8 + i] = graphics_pipeline.om.p_depth[fragment_linear_coordinate];
+		}
+	}
 }
 
-inline v2f32 compute_perspective_barycentric_coords(const Setup *p_setup, v2f32 barycentric_coordinates) {
-	v2f32 perspective_barycentric_coords;
-	float u_bary = barycentric_coordinates.x;
-	float v_bary = barycentric_coordinates.y;
-
-	float denom = (1.0 - u_bary - v_bary) * p_setup->a_reciprocal_ws[0] + u_bary * p_setup->a_reciprocal_ws[1] + v_bary * p_setup->a_reciprocal_ws[2];
-	perspective_barycentric_coords.x = u_bary * p_setup->a_reciprocal_ws[1] / denom;
-	perspective_barycentric_coords.y = v_bary * p_setup->a_reciprocal_ws[2] / denom;
-
-	return perspective_barycentric_coords;
+inline void write_tile(u32 bin_index, u32 *p_colors, f32 *p_depths) {
+	v2i32 tile_min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
+	f32 min_tile_depth = 1.0;
+	for(int j = 0; j < 8; ++j) {
+		for(int i = 0; i < 8; ++i) {
+			i32 x = tile_min_bounds.x + i;
+			i32 y = tile_min_bounds.y + j;
+			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
+			graphics_pipeline.om.p_colors[fragment_linear_coordinate] = p_colors[j * 8 + i];
+			graphics_pipeline.om.p_depth[fragment_linear_coordinate] = p_depths[j * 8 + i];
+			min_tile_depth = MIN(min_tile_depth, p_depths[j * 8 + i]);
+		}
+	}
+	a_tile_min_depths[bin_index] = min_tile_depth;
 }
 
-SuprematistVertex suprematist_vertex_buffer[] = {
-	{ { 0.31219, 0.15,  0.5,  1.0}, { 0.08627, 0.07450, 0.07058 } },
-	{ { 0.92804, 0.142, 0.5,  1.0}, { 0.08627, 0.07450, 0.07058 } },
-	{ { 0.92682, 0.883, 0.5,  1.0}, { 0.08627, 0.07450, 0.07058 } },
-	{ { 0.32195, 0.889, 0.5,  1.0}, { 0.08627, 0.07450, 0.07058 } },
-	{ { 0.07317, 0.41,  0.25, 1.0}, { 0.17647, 0.17254, 0.32549 } },
-	{ { 0.66463, 0.614, 0.25, 1.0}, { 0.17647, 0.17254, 0.32549 } },
-	{ { 0.08170, 0.887, 0.25, 1.0}, { 0.17647, 0.17254, 0.32549 } },
-	{ { 0.0, 0.0, 0.75, 1.0},{ 0.89019, 0.87450, 0.84705 } },
-	{ { 1.0, 0.0, 0.75, 1.0 },{ 0.89019, 0.87450, 0.84705 } },
-	{ { 1.0, 1.0, 0.75, 1.0 },{ 0.89019, 0.87450, 0.84705 } },
-	{ { 0.0, 1.0, 0.75, 1.0 },{ 0.89019, 0.87450, 0.84705 } },
-};
-
-u32 suprematist_index_buffer[] = {
-	0, 1, 2,
-	2, 3, 0,
-	4, 6, 5,
-	7, 8, 9,
-	9, 10, 7,
-};
-
-// canvas size  820 x 1000 
-//					0			1		2			2		3			0
-// black square {{256,150},{761,142},{760,883}},{{760,883},{264,889},{256,150}} color {22,19,18}
-// blue triangle {{60,410},{545,614},{67,887}} color {45,44,83}
-// background color {227, 223, 216}
+inline f32 get_tile_minimum_depth(u32 bin_index) {
+	return a_tile_min_depths[bin_index];
+}
 
 void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, i32 *p_num_vertices) {
 
@@ -432,7 +534,7 @@ void clip_by_plane(Vertex *p_clipped_vertices, v4f32 plane_normal, f32 plane_d, 
 	memcpy(p_clipped_vertices, a_result_vertices, sizeof(Vertex)*num_out_vertices);
 }
 
-void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
+void clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
 	//rmt_BeginCPUSample(clipper, RMTSF_Aggregate);
 
 	clip_by_plane(p_clipped_vertices, v4f32_normalize((v4f32) { 1, 0, 0, 1 }), 0, p_num_clipped_vertices);	// -w <= x <==> 0 <= x + w
@@ -445,40 +547,7 @@ void run_clipper(Vertex *p_clipped_vertices, i32 *p_num_clipped_vertices) {
 	//rmt_EndCPUSample();
 }
 
-inline void read_tile(v2i32 tile_min_bounds, u32 *p_colors, f32 *p_depths) {
-	for(int j = 0; j < 8; ++j) {
-		for(int i = 0; i < 8; ++i) {
-			i32 x = tile_min_bounds.x + i;
-			i32 y = tile_min_bounds.y + j;
-			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-			p_colors[j * 8 + i] = graphics_pipeline.om.p_colors[fragment_linear_coordinate];
-			p_depths[j * 8 + i] = graphics_pipeline.om.p_depth[fragment_linear_coordinate];
-		}
-	}
-}
-
-inline void write_tile(u32 bin_index, u32 *p_colors, f32 *p_depths) {
-	v2i32 tile_min_bounds = { TILE_WIDTH * (bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin_index / WIDTH_IN_TILES) };
-	f32 min_tile_depth = 1.0;
-	for(int j = 0; j < 8; ++j) {
-		for(int i = 0; i < 8; ++i) {
-			i32 x = tile_min_bounds.x + i;
-			i32 y = tile_min_bounds.y + j;
-			const fragment_linear_coordinate = y * (i32)graphics_pipeline.rs.viewport.width + x;
-			graphics_pipeline.om.p_colors[fragment_linear_coordinate] = p_colors[j * 8 + i];
-			graphics_pipeline.om.p_depth[fragment_linear_coordinate] = p_depths[j * 8 + i];
-			min_tile_depth = MIN(min_tile_depth, p_depths[j * 8 + i]);
-		}
-	}
-	a_tile_min_depths[bin_index] = min_tile_depth;
-}
-
-inline f32 get_tile_minimum_depth(u32 bin_index) {
-	return a_tile_min_depths[bin_index];
-}
-
-
-void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_data) {
+void input_assembler_stage(u32 index_count, void **pp_vertex_input_data) {
 	rmt_BeginCPUSample(input_assambler_stage, 0);
 
 	// Input Assembler
@@ -498,13 +567,8 @@ void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_
 	for(u32 index_index = 0; index_index < index_count; index_index += 8) {
 		f256 *p_vertex = ((f256*)p_vertex_input_data) + index_index;
 		i256 index = _mm256_set_epi32(index_index + 7, index_index + 6, index_index + 5, index_index + 4, index_index + 3, index_index + 2, index_index + 1, index_index);
-		//u32 vertex_index = graphics_pipeline.ia.p_index_buffer[index_index];
 		i256 vertex_index = _mm256_i32gather_epi32((i32*)graphics_pipeline.ia.p_index_buffer, index, 4);
-		//i256 mask = _mm256_cmpgt_epi32(_mm256_set1_epi32(index_count), index);
-		//i256 vertex_index = _mm256_mask_i32gather_epi32(_mm256_set1_epi32(0), (i32*)graphics_pipeline.ia.p_index_buffer, index, mask, 4);
-		//u32 vertex_offset = vertex_index * per_vertex_input_data_size;
 		i256 vertex_offset = _mm256_mullo_epi32(vertex_index, _mm256_set1_epi32(per_vertex_input_data_size));
-		//memcpy(p_vertex, ((u8*)graphics_pipeline.ia.p_vertex_buffer) + vertex_offset, per_vertex_input_data_size);
 		p_vertex[0] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 0, vertex_offset, 1);
 		p_vertex[1] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 1, vertex_offset, 1);
 		p_vertex[2] = _mm256_i32gather_ps(((f32*)graphics_pipeline.ia.p_vertex_buffer) + 2, vertex_offset, 1);
@@ -519,7 +583,7 @@ void run_input_assembler_stage_omp_simd(u32 index_count, void **pp_vertex_input_
 	rmt_EndCPUSample();
 }
 
-void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
+void vertex_shader_stage(u32 vertex_count, const void * p_vertex_input_data, u32 *p_per_vertex_output_data_size, void **pp_vertex_output_data) {
 	rmt_BeginCPUSample(vertex_shader_stage, 0);
 	
 	// Vertex Shader
@@ -557,7 +621,7 @@ void run_vertex_shader_stage_omp_simd(u32 vertex_count, const void * p_vertex_in
 	rmt_EndCPUSample();
 }
 
-void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output_data, u32 *p_out_triangle_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
+void primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output_data, u32 *p_out_triangle_count, Triangle **pp_triangles, v4f32 **pp_attributes) {
 	rmt_BeginCPUSample(primitive_assembly_stage, 0);
 	// Primitive Assembly
 	const u32 max_clipper_generated_triangle_count = max(in_triangle_count * 2, 512);
@@ -615,7 +679,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 		memcpy(a_clipped_vertices + 2, ((v4f32*)p_vertex_output_data) + in_triangle_index * num_attributes * 3 + num_attributes * 2, per_vertex_offset);
 
 		if(is_clipping_needed) {
-			run_clipper(&a_clipped_vertices, &clipped_vertex_count);
+			clipper(&a_clipped_vertices, &clipped_vertex_count);
 		}
 
 		for(i32 clipped_vertex_index = 1; clipped_vertex_index < clipped_vertex_count - 1; ++clipped_vertex_index) {
@@ -673,8 +737,9 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 
 			// triangle setup
 			signed_area = ((x[1] - x[0]) * (y[2] - y[0])) - ((x[2] - x[0]) * (y[1] - y[0]));
-			if(signed_area == 0) { continue; } // degenerate triangle 
-			if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
+			//if(signed_area == 0) { signed_area=0.00001; } // degenerate triangle 
+			
+			//if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
 
 			// BUG(cerlet): Backface culling creates cracks in the rasterization!
 			// face culling with winding order
@@ -686,7 +751,9 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 
 			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
-			assert(signed_area_f32 != 0);
+			//assert(signed_area_f32 != 0);
+			if(signed_area_f32 == 0.0) signed_area_f32 = 1.0;
+
 
 			setup.one_over_area = fabs(1.f / signed_area_f32);
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
@@ -737,7 +804,7 @@ void run_primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_ou
 	rmt_EndCPUSample();
 }
 
-void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids, u32* p_total_triangle_count ) {
+void binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 **pp_triangle_ids, CompactedBin **pp_compacted_bins, u32 *p_num_compacted_bins, u32* p_total_triangle_count ) {
 	rmt_BeginCPUSample(binner, 0);
 	u32 current_counts[NUM_BINS];
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
@@ -787,60 +854,25 @@ void run_binner(u32 assembled_triangle_count, const Triangle *p_triangles, u32 *
 	}
 
 	u32 curr_compacted_bin_index = 0;
-	p_compacted_bins = malloc(sizeof(CompactedBin)*num_bins_with_tris);
-	memset(p_compacted_bins, 0, sizeof(CompactedBin)*num_bins_with_tris);
+	(*pp_compacted_bins) = malloc(sizeof(CompactedBin)*num_bins_with_tris);
+	memset((*pp_compacted_bins), 0, sizeof(CompactedBin)*num_bins_with_tris);
 	for(u32 bin_index = 0; bin_index < NUM_BINS; ++bin_index) {
 		u32 curr_num_tris = a_bins[bin_index].num_triangles_self;
 		if(!curr_num_tris) continue;
-		p_compacted_bins[curr_compacted_bin_index].num_triangles_self = curr_num_tris;
-		p_compacted_bins[curr_compacted_bin_index].num_triangles_upto = a_bins[bin_index].num_triangles_upto;
-		p_compacted_bins[curr_compacted_bin_index].bin_index = bin_index;
+		(*pp_compacted_bins)[curr_compacted_bin_index].num_triangles_self = curr_num_tris;
+		(*pp_compacted_bins)[curr_compacted_bin_index].num_triangles_upto = a_bins[bin_index].num_triangles_upto;
+		(*pp_compacted_bins)[curr_compacted_bin_index].bin_index = bin_index;
 		curr_compacted_bin_index++;
 	}
 	assert(curr_compacted_bin_index == num_bins_with_tris);
 	
-	num_compacted_bins = num_bins_with_tris;
+	*p_num_compacted_bins = num_bins_with_tris;
 	*p_total_triangle_count = total_num_triangles_in_bins;
 	
 	rmt_EndCPUSample();
 }
 
-void run_rasterizer_omp(u32 total_triangle_count_in_bins, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
-	rmt_BeginCPUSample(rasterizer_stage, 0);
-	
-	*pp_tile_infos = malloc(total_triangle_count_in_bins * sizeof(TileInfo));
-
-	#pragma omp parallel for schedule(dynamic, 128)
-	for(u32 bin_index = 0; bin_index < num_compacted_bins; ++bin_index) {
-		CompactedBin bin = p_compacted_bins[bin_index];
-		v2i32 min_bounds = { TILE_WIDTH * (bin.bin_index % WIDTH_IN_TILES), TILE_HEIGHT * (bin.bin_index / WIDTH_IN_TILES) };
-		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
-		
-		u32 num_triangles_of_current_bin = bin.num_triangles_self;
-		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
-			u32 triangle_id = p_triangle_ids[bin.num_triangles_upto + triangle_index];
-			TileInfo tile_info;
-			Triangle tri = p_triangles[triangle_id];
-			tile_info.triangle_id = triangle_id;
-			u64 fragment_mask = 0;
-			for(i32 y = min_bounds.y; y <= max_bounds.y; ++y) {
-				for(i32 x = min_bounds.x; x <= max_bounds.x; ++x) {
-					i32 alpha =	(tri.setup.a_edge_functions[0].a * x + tri.setup.a_edge_functions[0].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[0].c;
-					i32 beta =	(tri.setup.a_edge_functions[1].a * x + tri.setup.a_edge_functions[1].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[1].c;
-					i32 gamma =	(tri.setup.a_edge_functions[2].a * x + tri.setup.a_edge_functions[2].b * y) * (1 << NUM_SUB_PIXEL_PRECISION_BITS) + tri.setup.a_edge_functions[2].c;
-					i32 mask = 0 < (alpha | beta | gamma) ? 1 : 0;
-					fragment_mask += (((u64)1) << (((y - min_bounds.y) << 3) + x - min_bounds.x)) * mask;
-				}
-			}
-			tile_info.fragment_mask = fragment_mask;
-			(*pp_tile_infos)[bin.num_triangles_upto + triangle_index] = tile_info;
-		}
-	}
-
-	rmt_EndCPUSample();
-}
-
-void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p_triangles, const u32 *p_triangle_ids, TileInfo **pp_tile_infos) {
+void rasterizer(u32 total_triangle_count_in_bins, u32 num_compacted_bins, const Triangle *p_triangles, const u32 *p_triangle_ids, const CompactedBin *p_compacted_bins, TileInfo **pp_tile_infos) {
 	rmt_BeginCPUSample(rasterizer_stage, 0);
 
 	*pp_tile_infos = malloc(total_triangle_count_in_bins * sizeof(TileInfo));
@@ -852,7 +884,7 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 		v2i32 max_bounds = v2i32_add_v2i32(min_bounds, (v2i32) { TILE_WIDTH - 1, TILE_HEIGHT - 1 });
 		i256 x = _mm256_add_epi32(_mm256_set1_epi32(min_bounds.x), _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
 		u32 num_triangles_of_current_bin = bin.num_triangles_self;
-		f32 min_tile_depth = get_tile_minimum_depth(bin_index);
+		f32 min_tile_depth = get_tile_minimum_depth(bin.bin_index);
 		for(u32 triangle_index = 0; triangle_index < num_triangles_of_current_bin; ++triangle_index) {
 			u32 triangle_id = p_triangle_ids[bin.num_triangles_upto + triangle_index];
 			TileInfo tile_info;
@@ -902,7 +934,7 @@ void run_rasterizer_omp_simd(u32 total_triangle_count_in_bins, const Triangle *p
 	rmt_EndCPUSample();
 }
 
-void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle *p_triangles) {
+void pixel_shader_stage(const TileInfo* p_fragments, const Triangle *p_triangles, const CompactedBin *p_compacted_bins, u32 num_compacted_bins) {
 	rmt_BeginCPUSample(pixel_shader_stage, 0);
 
 	u8 num_attibutes = graphics_pipeline.vs.output_register_count;
@@ -1047,43 +1079,6 @@ void run_pixel_shader_stage_omp_simd(const TileInfo* p_fragments, const Triangle
 	rmt_EndCPUSample();
 }
 
-void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_location, int base_vertex_location*/) {
-	rmt_BeginCPUSample(draw_indexed, 0);
-
-	void *p_vertex_input_data = NULL;
-	run_input_assembler_stage_omp_simd(index_count, &p_vertex_input_data);
-
-	u32 per_vertex_output_data_size = 0;
-	void *p_vertex_output_data = NULL;
-	run_vertex_shader_stage_omp_simd(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
-
-	assert((index_count % 3) == 0);
-	u32 triangle_count = index_count / 3;
-
-	Triangle *p_triangles = NULL;
-	v4f32 *p_attributes = NULL;
-	u32 assembled_triangle_count = 0;
-	run_primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles, &p_attributes);
-	
-	u32 *p_triangle_ids = NULL;
-	u32 total_triangle_count_in_bins = 0;
-	run_binner(assembled_triangle_count, p_triangles, &p_triangle_ids, &total_triangle_count_in_bins);
-
-	TileInfo *p_tile_infos = NULL;
-	run_rasterizer_omp_simd(total_triangle_count_in_bins, p_triangles, p_triangle_ids, &p_tile_infos);
-
-	run_pixel_shader_stage_omp_simd(p_tile_infos, p_triangles);
-
-	free(p_vertex_input_data);
-	free(p_vertex_output_data);
-	free(p_attributes);
-	free(p_triangles);
-	free(p_triangle_ids);
-	free(p_tile_infos);
-	free(p_compacted_bins);
-	rmt_EndCPUSample();
-}
-
 void clear_render_target_view(const f32 *p_clear_color) {
 	rmt_BeginCPUSample(clear_render_target_view, 0);
 	v4f32 clear_color = { p_clear_color[0],p_clear_color[1] ,p_clear_color[2], p_clear_color[3]};
@@ -1108,120 +1103,198 @@ void clear_depth_stencil_view(const f32 depth) {
 	rmt_EndCPUSample();
 }
 
-void test() {
-	i256 ones = _mm256_set_epi32(0x08'08'08'08, 0x07'07'07'07, 0x06'06'06'06, 0x05'05'05'05, 0x04'04'04'04, 0x03'03'03'03, 0x02'02'02'02, 0x01'01'01'01);
-	u32 mask = 0b00001100'00001000'00000100'00000000;
-	i256 zeros = _mm256_set1_epi32(mask);
-	i256 result = _mm256_shuffle_epi8(ones, zeros);
-	result = _mm256_permutevar8x32_epi32(result, _mm256_set_epi32(0x7, 0x3, 0, 0, 0, 0, 0, 0));
-	i64 a = _mm256_extract_epi64(result, 3);
+void draw_indexed(UINT index_count /* TODO(cerlet): Use UINT start_index_location, int base_vertex_location*/) {
+	rmt_BeginCPUSample(draw_indexed, 0);
+
+	void *p_vertex_input_data = NULL;
+	input_assembler_stage(index_count, &p_vertex_input_data);
+
+	u32 per_vertex_output_data_size = 0;
+	void *p_vertex_output_data = NULL;
+	vertex_shader_stage(index_count, p_vertex_input_data, &per_vertex_output_data_size, &p_vertex_output_data);
+	stats.vertex_count += index_count;
+
+	assert((index_count % 3) == 0);
+	u32 triangle_count = index_count / 3;
+	stats.input_triangle_count += triangle_count;
+
+	Triangle *p_triangles = NULL;
+	v4f32 *p_attributes = NULL;
+	u32 assembled_triangle_count = 0;
+	primitive_assembly_stage(triangle_count, p_vertex_output_data, &assembled_triangle_count, &p_triangles, &p_attributes);
+	stats.assembled_triangle_count += assembled_triangle_count;
+
+	u32 *p_triangle_ids = NULL;
+	CompactedBin *p_compacted_bins = NULL;
+	u32 total_triangle_count_in_bins = 0;
+	u32  num_compacted_bins = 0;
+	binner(assembled_triangle_count, p_triangles, &p_triangle_ids, &p_compacted_bins, &num_compacted_bins, &total_triangle_count_in_bins);
+	stats.active_bin_count += num_compacted_bins;
+	stats.total_triangle_count_in_bins += total_triangle_count_in_bins;
+
+	TileInfo *p_tile_infos = NULL;
+	rasterizer(total_triangle_count_in_bins, num_compacted_bins, p_triangles, p_triangle_ids, p_compacted_bins, &p_tile_infos);
+	
+	pixel_shader_stage(p_tile_infos, p_triangles, p_compacted_bins, num_compacted_bins);
+
+	free(p_vertex_input_data);
+	free(p_vertex_output_data);
+	free(p_attributes);
+	free(p_triangles);
+	free(p_triangle_ids);
+	free(p_tile_infos);
+	free(p_compacted_bins);
+	rmt_EndCPUSample();
 }
 
-void render() {
+//----------------------------------------  APPLICATION  ----------------------------------------------------------------------------------------------------------------------------------------------------//
+
+void render(f32 delta_t_ms) {
 	rmt_BeginCPUSample(render, 0);
+	
+	memset(&stats, 0, sizeof(Stats));
+	stats.frame_time = delta_t_ms;
 
 	const f32 clear_color[4] = { (f32)227/255, (f32)223/255, (f32)216/255, 0.f };
 	clear_render_target_view(clear_color); // TODO(cerlet): Implement clearing via render target view pointer!
 	clear_depth_stencil_view(0.0);
 
-	// draw house
-	graphics_pipeline.ia.input_layout = transform_vs_simd.in_vertex_size / VECTOR_WIDTH;
-	
+	// Set the common part of the pipeline
 	graphics_pipeline.ia.primitive_topology = PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-	graphics_pipeline.ia.p_index_buffer = mesh_house.p_index_buffer;
-	graphics_pipeline.ia.p_vertex_buffer = mesh_house.p_vertex_buffer;
-
-	graphics_pipeline.vs.output_register_count = transform_vs_simd.out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
-	graphics_pipeline.vs.shader = transform_vs_simd.vs_main;
-	
-	//graphics_pipeline.vs.p_shader_resource_views[0] = &env_tex;
-	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
-
 	Viewport viewport = { 0.f,0.f,(f32)frame_width,(f32)frame_height,0.f,1.f };
 	graphics_pipeline.rs.viewport = viewport;
-
-	graphics_pipeline.ps.shader = passthrough_ps.ps_main;
-	graphics_pipeline.ps.p_shader_resource_views[0] = &tex_house;
-
 	graphics_pipeline.om.p_colors = &frame_buffer[0][0];
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
+	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 	
-	draw_indexed(mesh_house.header.index_count);
+	Scene *p_scene = &scene_ftm;
+	for(i32 object_index = 0; object_index < p_scene->num_objects; ++object_index) {
+		// Set the draw call specific part of the pipeline
+		graphics_pipeline.ia.input_layout = p_scene->p_vs->in_vertex_size / VECTOR_WIDTH;
+		graphics_pipeline.vs.output_register_count = p_scene->p_vs->out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
+		graphics_pipeline.vs.shader = p_scene->p_vs->vs_main;
+		graphics_pipeline.ps.shader = p_scene->p_ps->ps_main;
 
-	// draw sky
-	graphics_pipeline.ia.p_index_buffer = mesh_sky.p_index_buffer;
-	graphics_pipeline.ia.p_vertex_buffer = mesh_sky.p_vertex_buffer;
-	graphics_pipeline.ps.p_shader_resource_views[0] = &tex_sky;
-
-	draw_indexed(mesh_sky.header.index_count);
+		graphics_pipeline.ia.p_index_buffer = p_scene->a_meshes[object_index].p_index_buffer;
+		graphics_pipeline.ia.p_vertex_buffer = p_scene->a_meshes[object_index].p_vertex_buffer;
+		graphics_pipeline.ps.p_shader_resource_views[0] = &p_scene->a_textures[object_index];
+		draw_indexed(p_scene->a_meshes[object_index].header.index_count);
+	}
 
 	rmt_EndCPUSample();
 }
 
 void present(HWND h_window, f32 delta_t) {
 	rmt_BeginCPUSample(present, 0);
-	char buf[32];
-	sprintf(buf,"frame time: %.5f ms", delta_t);
-	SetWindowTextA(h_window, buf);
 	InvalidateRect(h_window, NULL, FALSE);
-	//UpdateWindow(h_window);
 	rmt_EndCPUSample();
 }
 
-void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
-	void *p_data = NULL;
-	OCTARINE_MESH_RESULT result = octarine_mesh_read_from_file(p_mesh_name, &(p_mesh->header), &p_data);
-	if(result != OCTARINE_MESH_OK) { assert(false); };
+void init(HINSTANCE h_instance, i32 n_cmd_show) {
+	
+	if(!is_avx_supported()) {
+		error("init", "Malevich requires AVX support to run!");
+	}
 
-	u32 vertex_size = sizeof(float) * 8;
-	u32 vertex_buffer_size = p_mesh->header.vertex_count * vertex_size;
+	{ // Init Window
+		const char *p_window_class_name = "Malevich Window Class";
+		const char *p_window_name = "Malevich";
+		{
+			WNDCLASSEX window_class = { 0 };
+			window_class.cbSize = sizeof(WNDCLASSEX);
+			window_class.style = CS_HREDRAW | CS_VREDRAW;
+			window_class.lpfnWndProc = window_proc;
+			window_class.hInstance = h_instance;
+			window_class.hIcon = (HICON)(LoadImage(NULL, "../config/suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+			window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+			window_class.hbrBackground = CreateSolidBrush(RGB(227, 223, 216));// (HBRUSH)(COLOR_WINDOW + 1);
+			window_class.lpszClassName = p_window_class_name;
 
-	p_mesh->p_vertex_buffer = p_data;
-	p_mesh->p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
-}
+			ATOM result = RegisterClassExA(&window_class);
+			if(!result) { error_win32("RegisterClassExA", GetLastError()); return; };
 
-void load_texture(const char *p_tex_name, Texture2D *p_tex) {
-	OctarineImageHeader header;
-	OCTARINE_IMAGE result = octarine_image_read_from_file(p_tex_name, &header, &(p_tex->p_data));
-	if(result != OCTARINE_IMAGE_OK) { assert(false); };
+			RECT window_rect = { 0, 0, frame_width, frame_height };
+			AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
 
-	p_tex->width = header.width;
-	p_tex->height = header.height;
+			h_window = CreateWindowExA(
+				0, p_window_class_name, p_window_name,
+				WS_OVERLAPPEDWINDOW | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+				window_rect.right - window_rect.left,
+				window_rect.bottom - window_rect.top,
+				NULL, NULL, h_instance, NULL);
+			if(!h_window) { error_win32("CreateWindowExA", GetLastError()); return; };
 
-	// if texture is in srgb color space get rid of gamma mapping
-	for(i32 t = 0; t < header.height; ++t) {
-		for(i32 s = 0; s < header.width; ++s) {
-			v4f32 texel = decode_u32_as_color(get_texel_u(*p_tex, s, t));
-			texel.x = srgb_to_linear(texel.x);
-			texel.y = srgb_to_linear(texel.y);
-			texel.z = srgb_to_linear(texel.z);
-			texel.w = srgb_to_linear(texel.w);
-			((u32*)p_tex->p_data)[t*p_tex->width + s] = encode_color_as_u32(texel);
+			ShowWindow(h_window, n_cmd_show);
+			UpdateWindow(h_window);
 		}
 	}
-}
 
-void init() {
-	{ // Load Assets
+	{ // Scene ftm
+		u32 num_objects = 0;
+		load_mesh("../assets/ftm_piedras_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_piedras_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
 
-		load_mesh("../assets/toon_house_mesh.octrn", &mesh_house);
-		load_mesh("../assets/toon_sky_mesh.octrn", &mesh_sky);
+		load_mesh("../assets/ftm_madera_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_madera_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
 
-		load_texture("../assets/toon_house_tex.octrn", &tex_house);
-		load_texture("../assets/toon_sky_tex.octrn", &tex_sky);
+		load_mesh("../assets/ftm_leaves_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_leaves_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
+
+		load_mesh("../assets/ftm_dec_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_dec_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
+
+		load_mesh("../assets/ftm_roof_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_roof_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
+
+		load_mesh("../assets/ftm_ground_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_ground_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
+
+		load_mesh("../assets/ftm_sky_mesh.octrn", scene_ftm.a_meshes + num_objects);
+		load_texture("../assets/ftm_sky_tex.octrn", scene_ftm.a_textures + num_objects);
+		++num_objects;
+
+		scene_ftm.num_objects = num_objects;
+		scene_ftm.p_vs = &basic_vs;
+		scene_ftm.p_ps = &basic_ps;
+	}
+
+	{ // Scene toon
+		u32 num_objects = 0;
+		load_mesh("../assets/toon_house_mesh.octrn", scene_toon.a_meshes + num_objects);
+		load_texture("../assets/toon_house_tex.octrn", scene_toon.a_textures + num_objects);
+		++num_objects;
+
+		load_mesh("../assets/toon_sky_mesh.octrn", scene_toon.a_meshes + num_objects);
+		load_texture("../assets/toon_sky_tex.octrn", scene_toon.a_textures + num_objects);
+		++num_objects;
+
+		scene_toon.num_objects = num_objects;
+		scene_toon.p_vs = &basic_vs;
+		scene_toon.p_ps = &basic_ps;
+	}
+
+	{ // Scene suprematism
+		u32 num_objects = 0;
+		scene_suprematism.a_meshes[0].p_vertex_buffer = &suprematist_vertex_buffer;
+		scene_suprematism.a_meshes[0].p_index_buffer = &suprematist_index_buffer;
+		scene_suprematism.a_meshes[0].header.index_count = 24;
+		scene_suprematism.num_objects = 1;
+		scene_suprematism.p_vs = &passthrough_vs;
+		scene_suprematism.p_ps = &passthrough_ps;
 	}
 
 	{ // Init Camera
-#if 1
 		camera.pos = (v3f32){ 3.5f, 1.0f, 1.0f};
 		camera.yaw_rad = TO_RADIANS(0.0);
 		camera.pitch_rad = TO_RADIANS(0.0);
-#else
-	  camera.pos = (v3f32){ 0.395f, 0.216f, 0.025f};
-	  camera.yaw_rad = -2.0;
-	  camera.pitch_rad = -0.4;
-#endif
-		camera.fov_y_angle_deg = 60.f;
+
+		camera.fov_y_angle_deg = 75.f;
 		camera.near_plane = 0.01;
 		camera.far_plane = 100.01;
 
@@ -1352,57 +1425,24 @@ void update(f32 delta_t) {
 
 	per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
 	
-	//char buf[1024];
-	//sprintf(buf,"pos: %f, %f, %f --  yaw: %f -- pitch: %f \n", camera.pos.x, camera.pos.y, camera.pos.z, camera.yaw_rad, camera.pitch_rad);
-	//OutputDebugString(buf);
-
 	rmt_EndCPUSample();
 }
 
+void clean_up(Remotery *p_remotery){
+	rmt_DestroyGlobalInstance(p_remotery);
+}
+
 int CALLBACK WinMain(
-	HINSTANCE hInstance,
-	HINSTANCE hPrevInstance,
-	LPSTR     lpCmdLine,
-	int       nCmdShow
+	HINSTANCE h_instance,
+	HINSTANCE h_prev_instance,
+	LPSTR     lp_cmd_line,
+	int       n_cmd_show
 ) {
 	// Remotery
 	Remotery* p_remotery;
 	rmt_CreateGlobalInstance(&p_remotery);
 
-	const char *p_window_class_name = "Malevich Window Class";
-	const char *p_window_name = "Malevich";
-
-	HWND h_window = NULL;
-	{
-		WNDCLASSEX window_class = { 0 };
-		window_class.cbSize = sizeof(WNDCLASSEX);
-		window_class.style = CS_HREDRAW | CS_VREDRAW;
-		window_class.lpfnWndProc = window_proc;
-		window_class.hInstance = hInstance;
-		window_class.hIcon = (HICON)(LoadImage(NULL,"../config/suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-		window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
-		window_class.hbrBackground = CreateSolidBrush(RGB(227, 223, 216));// (HBRUSH)(COLOR_WINDOW + 1);
-		window_class.lpszClassName = p_window_class_name;
-
-		ATOM result = RegisterClassExA(&window_class);
-		if(!result) { error_win32("RegisterClassExA", GetLastError()); return -1; };
-
-		RECT window_rect = { 0, 0, frame_width*STRECTH_FACTOR, frame_height*STRECTH_FACTOR };
-		AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
-
-		h_window = CreateWindowExA(
-			0, p_window_class_name, p_window_name,
-			WS_OVERLAPPEDWINDOW | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
-			window_rect.right - window_rect.left,
-			window_rect.bottom - window_rect.top,
-			NULL, NULL, hInstance, NULL);
-		if(!h_window) { error_win32("CreateWindowExA", GetLastError()); return -1; };
-
-		ShowWindow(h_window, nCmdShow);
-		UpdateWindow(h_window);
-	}
-
-	init();
+	init(h_instance, n_cmd_show);
 
 	MSG msg = { 0 };
 	f64 delta_time_ms = 0.0;
@@ -1412,15 +1452,15 @@ int CALLBACK WinMain(
 	QueryPerformanceFrequency(&performance_frequency);
 	f64 counter_scale = 1000.0 / performance_frequency.QuadPart;
 	while(msg.message != WM_QUIT) {
+		QueryPerformanceCounter(&start_frame_time);
 		if(PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
 			TranslateMessage(&msg);
 			DispatchMessageA(&msg);
 		}
 		else {
-			QueryPerformanceCounter(&start_frame_time);
 			rmt_BeginCPUSample(Malevich, 0);
 			update(delta_time_ms);
-			render();
+			render(delta_time_ms);
 			present(h_window, delta_time_ms);
 			rmt_EndCPUSample();
 			QueryPerformanceCounter(&end_frame_time);
@@ -1428,7 +1468,7 @@ int CALLBACK WinMain(
 		}
 	}
 
-	rmt_DestroyGlobalInstance(p_remotery);
+	clean_up(p_remotery);
 
 	return 0;
 }

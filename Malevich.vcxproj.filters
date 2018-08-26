@@ -32,13 +32,13 @@
     <ClCompile Include="source\passthrough_vs.c">
       <Filter>Source Files\shaders</Filter>
     </ClCompile>
+    <ClCompile Include="source\basic_vs.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="source\basic_ps.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
     <ClCompile Include="source\passthrough_ps.c">
-      <Filter>Source Files\shaders</Filter>
-    </ClCompile>
-    <ClCompile Include="source\transform_vs_simd.c">
-      <Filter>Source Files\shaders</Filter>
-    </ClCompile>
-    <ClCompile Include="source\transform_vs.c">
       <Filter>Source Files\shaders</Filter>
     </ClCompile>
   </ItemGroup>

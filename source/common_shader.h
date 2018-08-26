@@ -10,12 +10,11 @@ typedef m4x4f32 float4x4;
 typedef struct VertexShader {
 	unsigned int in_vertex_size;
 	unsigned int out_vertex_size;
-	//void(*vs_main)(const void *p_vertex_input_data, void *p_vertex_output_data, const void *p_constant_buffers);
 	void(*vs_main)();
 }VertexShader;
 
 typedef struct PixelShader {
-	void(*ps_main)(void *p_fragment_input_data, void *p_fragment_output_data, const void *p_shader_resource_views);
+	void(*ps_main)();
 } PixelShader;
 
 typedef struct Texture2D {
