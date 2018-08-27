@@ -41,11 +41,11 @@
     <ClCompile Include="source\passthrough_ps.c">
       <Filter>Source Files\shaders</Filter>
     </ClCompile>
+    <ClCompile Include="source\vertex_lighting_vs.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="source\common_shader.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
     <ClInclude Include="source\math.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -54,6 +54,9 @@
     </ClInclude>
     <ClInclude Include="source\external\octarine\octarine_mesh.h">
       <Filter>Source Files\external\octarine</Filter>
+    </ClInclude>
+    <ClInclude Include="source\common_shader_core.h">
+      <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

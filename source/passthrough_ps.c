@@ -1,4 +1,4 @@
-#include "common_shader.h"
+#include "common_shader_core.h"
 
 typedef struct Ps_Input {
 	v4f256 SV_POSITION;
@@ -16,7 +16,6 @@ static void ps_main(const void *p_fragment_input_data, void *p_fragment_output_d
 
 	v3f256 color = { p_in->COLOR.x,  p_in->COLOR.y, p_in->COLOR.z };
 	//color = v3f256_srgb_from_linear_approx(color);
-
 	p_out->SV_TARGET.xyz = color;
 }
 

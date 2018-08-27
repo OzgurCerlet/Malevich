@@ -8,7 +8,7 @@
 #include <assert.h>
 
 #include "math.h"
-#include "common_shader.h"
+#include "common_shader_core.h"
 #include "external/Remotery/Remotery.h"
 #include "external/octarine/octarine_mesh.h"
 typedef int DXGI_FORMAT;
@@ -19,7 +19,7 @@ typedef int DXGI_FORMAT;
 #pragma comment(lib, "svml_disp.lib")
 
 #define WIDTH	1200 //560;
-#define HEIGHT	720 //704;
+#define HEIGHT  720 //704;
 
 #define TILE_WIDTH	8 
 #define TILE_HEIGHT 8 
@@ -47,6 +47,7 @@ extern VertexShader passthrough_vs;
 extern PixelShader passthrough_ps;
 extern VertexShader basic_vs;
 extern PixelShader basic_ps;
+extern VertexShader vertex_lighting_vs;
 
 typedef struct MeshHeader {
 	uint32_t size;
@@ -200,6 +201,12 @@ typedef struct Stats {
 	u32 total_triangle_count_in_bins;
 } Stats;
 
+typedef struct SuprematistVertex {
+	v4f32 pos;
+	v3f32 color;
+	f32 _pad;
+} SuprematistVertex;
+
 typedef struct Scene {
 	Mesh a_meshes[MAX_OBJECT_COUNT_PER_SCENE];
 	Texture2D a_textures[MAX_OBJECT_COUNT_PER_SCENE];
@@ -216,13 +223,6 @@ Input input;
 Bin	a_bins[NUM_BINS];
 f32 a_tile_min_depths[NUM_BINS];
 Stats stats;
-
-typedef struct SuprematistVertex {
-	v4f32 pos;
-	v3f32 color;
-	f32 _pad;
-} SuprematistVertex;
-
 SuprematistVertex suprematist_vertex_buffer[] = {
 	{ { 0.34107, 0.12215, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
 	{ { 0.95357, 0.12500, 0.5,  1.0 }, { 0.07500, 0.08200, 0.06300 }, {0.0} },
@@ -236,7 +236,6 @@ SuprematistVertex suprematist_vertex_buffer[] = {
 	{ { 1.00000, 1.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
 	{ { 0.00000, 1.00000, 0.25, 1.0 }, { 0.96100, 0.96100, 0.92900 }, {0.0} },
 };
-
 u32 suprematist_index_buffer[] = {
 	0, 1, 2,
 	2, 3, 0,
@@ -247,10 +246,15 @@ u32 suprematist_index_buffer[] = {
 	0, 0, 0,
 	0, 0, 0,
 };
-
-Scene scene_ftm;
-Scene scene_toon;
-Scene scene_suprematism;
+enum SceneType {
+	SceneType_FTM = 0,
+	SceneType_TOON,
+	SceneType_SUPREMATISM,
+	SceneType_EMILY,
+	SceneType_COUNT
+};
+Scene a_scenes[SceneType_COUNT];
+u32 current_scene_index = 0;
 
 //----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
@@ -283,29 +287,31 @@ void paint_window(HDC h_device_context) {
 
 	// Draw to bitmap
 	StretchDIBits(backbuffer_dc, 0, 0, frame_width, frame_height, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
-	SetBkMode(backbuffer_dc, TRANSPARENT);
-	char gui_buf[64];
-	int y = 0;
-	sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "vertex count: %d", stats.vertex_count);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "triangle count(input/assembled): %d, %d", stats.input_triangle_count, stats.assembled_triangle_count);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "active bin count: %d", stats.active_bin_count);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "avg triangle count per bin: %.5f", ((f32)stats.total_triangle_count_in_bins) / stats.active_bin_count);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "cam pos: %.5f, %.5f, %.5f", camera.pos.x, camera.pos.y, camera.pos.z);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
-	y += 14;
-	sprintf(gui_buf, "cam angles: %.5f, %.5f ", camera.yaw_rad, camera.pitch_rad);
-	TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	if(input.is_space_pressed) {
+		SetBkMode(backbuffer_dc, TRANSPARENT);
+		char gui_buf[64];
+		int y = 0;
+		sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "vertex count: %d", stats.vertex_count);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "triangle count(input/assembled): %d, %d", stats.input_triangle_count, stats.assembled_triangle_count);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "active bin count: %d", stats.active_bin_count);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "avg triangle count per bin: %.5f", ((f32)stats.total_triangle_count_in_bins) / stats.active_bin_count);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "cam pos: %.5f, %.5f, %.5f", camera.pos.x, camera.pos.y, camera.pos.z);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "cam angles: %.5f, %.5f ", camera.yaw_rad, camera.pitch_rad);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+	}
 
 	// Blit bitmap
 	BitBlt(h_device_context, 0, 0, frame_width, frame_height, backbuffer_dc, 0, 0, SRCCOPY);
@@ -334,6 +340,9 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 				case 'Q': input.is_q_pressed = true; break;
 				case 'S': input.is_s_pressed = true; break;
 				case 'W': input.is_w_pressed = true; break;
+				case VK_SPACE: input.is_space_pressed = !input.is_space_pressed; break;
+				case VK_ADD: current_scene_index = ((current_scene_index + 1) % SceneType_COUNT); break;
+				case VK_SUBTRACT: current_scene_index = (current_scene_index) ? (current_scene_index - 1) : 0; break;
 			}
 		} break;
 		case WM_KEYUP: {
@@ -425,7 +434,7 @@ void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
 	p_mesh->p_index_buffer = (u32*)(((uint8_t*)p_data) + vertex_buffer_size);
 }
 
-void load_texture(const char *p_tex_name, Texture2D *p_tex) {
+void load_texture(const char *p_tex_name, Texture2D *p_tex, bool is_in_srgb) {
 	OctarineImageHeader header;
 	OCTARINE_IMAGE result = octarine_image_read_from_file(p_tex_name, &header, &(p_tex->p_data));
 	if(result != OCTARINE_IMAGE_OK) { assert(false); };
@@ -434,14 +443,16 @@ void load_texture(const char *p_tex_name, Texture2D *p_tex) {
 	p_tex->height = header.height;
 
 	// if texture is in srgb color space get rid of gamma mapping
-	for(i32 t = 0; t < header.height; ++t) {
-		for(i32 s = 0; s < header.width; ++s) {
-			v4f32 texel = decode_u32_as_color(get_texel_u(*p_tex, s, t));
-			texel.x = srgb_to_linear(texel.x);
-			texel.y = srgb_to_linear(texel.y);
-			texel.z = srgb_to_linear(texel.z);
-			texel.w = srgb_to_linear(texel.w);
-			((u32*)p_tex->p_data)[t*p_tex->width + s] = encode_color_as_u32(texel);
+	if(is_in_srgb){
+		for(i32 t = 0; t < header.height; ++t) {
+			for(i32 s = 0; s < header.width; ++s) {
+				v4f32 texel = decode_u32_as_color(get_texel_u(*p_tex, s, t));
+				texel.x = srgb_to_linear(texel.x);
+				texel.y = srgb_to_linear(texel.y);
+				texel.z = srgb_to_linear(texel.z);
+				texel.w = srgb_to_linear(texel.w);
+				((u32*)p_tex->p_data)[t*p_tex->width + s] = encode_color_as_u32(texel);
+			}
 		}
 	}
 }
@@ -1167,7 +1178,7 @@ void render(f32 delta_t_ms) {
 	graphics_pipeline.om.p_depth = &depth_buffer[0][0];
 	graphics_pipeline.vs.p_constant_buffers[0] = &per_frame_cb;
 	
-	Scene *p_scene = &scene_ftm;
+	Scene *p_scene = a_scenes + current_scene_index;
 	for(i32 object_index = 0; object_index < p_scene->num_objects; ++object_index) {
 		// Set the draw call specific part of the pipeline
 		graphics_pipeline.ia.input_layout = p_scene->p_vs->in_vertex_size / VECTOR_WIDTH;
@@ -1177,6 +1188,7 @@ void render(f32 delta_t_ms) {
 
 		graphics_pipeline.ia.p_index_buffer = p_scene->a_meshes[object_index].p_index_buffer;
 		graphics_pipeline.ia.p_vertex_buffer = p_scene->a_meshes[object_index].p_vertex_buffer;
+		graphics_pipeline.vs.p_shader_resource_views[0] = &p_scene->a_textures[object_index];
 		graphics_pipeline.ps.p_shader_resource_views[0] = &p_scene->a_textures[object_index];
 		draw_indexed(p_scene->a_meshes[object_index].header.index_count);
 	}
@@ -1187,6 +1199,7 @@ void render(f32 delta_t_ms) {
 void present(HWND h_window, f32 delta_t) {
 	rmt_BeginCPUSample(present, 0);
 	InvalidateRect(h_window, NULL, FALSE);
+	//UpdateWindow(h_window);
 	rmt_EndCPUSample();
 }
 
@@ -1231,62 +1244,73 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 
 	{ // Scene ftm
 		u32 num_objects = 0;
-		load_mesh("../assets/ftm_piedras_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_piedras_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_piedras_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_piedras_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_madera_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_madera_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_madera_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_madera_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_leaves_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_leaves_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_leaves_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_leaves_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_dec_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_dec_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_dec_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_dec_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_roof_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_roof_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_roof_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_roof_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_ground_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_ground_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_ground_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_ground_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/ftm_sky_mesh.octrn", scene_ftm.a_meshes + num_objects);
-		load_texture("../assets/ftm_sky_tex.octrn", scene_ftm.a_textures + num_objects);
+		load_mesh("../assets/ftm_sky_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
+		load_texture("../assets/ftm_sky_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
 		++num_objects;
 
-		scene_ftm.num_objects = num_objects;
-		scene_ftm.p_vs = &basic_vs;
-		scene_ftm.p_ps = &basic_ps;
+		a_scenes[SceneType_FTM].num_objects = num_objects;
+		a_scenes[SceneType_FTM].p_vs = &basic_vs;
+		a_scenes[SceneType_FTM].p_ps = &basic_ps;
 	}
 
 	{ // Scene toon
 		u32 num_objects = 0;
-		load_mesh("../assets/toon_house_mesh.octrn", scene_toon.a_meshes + num_objects);
-		load_texture("../assets/toon_house_tex.octrn", scene_toon.a_textures + num_objects);
+		load_mesh("../assets/toon_house_mesh.octrn", a_scenes[SceneType_TOON].a_meshes + num_objects);
+		load_texture("../assets/toon_house_tex.octrn", a_scenes[SceneType_TOON].a_textures + num_objects, true);
 		++num_objects;
 
-		load_mesh("../assets/toon_sky_mesh.octrn", scene_toon.a_meshes + num_objects);
-		load_texture("../assets/toon_sky_tex.octrn", scene_toon.a_textures + num_objects);
+		load_mesh("../assets/toon_sky_mesh.octrn", a_scenes[SceneType_TOON].a_meshes + num_objects);
+		load_texture("../assets/toon_sky_tex.octrn", a_scenes[SceneType_TOON].a_textures + num_objects, true);
 		++num_objects;
 
-		scene_toon.num_objects = num_objects;
-		scene_toon.p_vs = &basic_vs;
-		scene_toon.p_ps = &basic_ps;
+		a_scenes[SceneType_TOON].num_objects = num_objects;
+		a_scenes[SceneType_TOON].p_vs = &basic_vs;
+		a_scenes[SceneType_TOON].p_ps = &basic_ps;
 	}
 
 	{ // Scene suprematism
 		u32 num_objects = 0;
-		scene_suprematism.a_meshes[0].p_vertex_buffer = &suprematist_vertex_buffer;
-		scene_suprematism.a_meshes[0].p_index_buffer = &suprematist_index_buffer;
-		scene_suprematism.a_meshes[0].header.index_count = 24;
-		scene_suprematism.num_objects = 1;
-		scene_suprematism.p_vs = &passthrough_vs;
-		scene_suprematism.p_ps = &passthrough_ps;
+		a_scenes[SceneType_SUPREMATISM].a_meshes[0].p_vertex_buffer = &suprematist_vertex_buffer;
+		a_scenes[SceneType_SUPREMATISM].a_meshes[0].p_index_buffer = &suprematist_index_buffer;
+		a_scenes[SceneType_SUPREMATISM].a_meshes[0].header.index_count = 24;
+		a_scenes[SceneType_SUPREMATISM].num_objects = 1;
+		a_scenes[SceneType_SUPREMATISM].p_vs = &passthrough_vs;
+		a_scenes[SceneType_SUPREMATISM].p_ps = &passthrough_ps;
+	}
+
+	{ // Scene Emily
+		u32 num_objects = 0;
+		load_mesh("../assets/emily_head_mesh.octrn", a_scenes[SceneType_EMILY].a_meshes + num_objects);
+		load_texture("../assets/ninomaru_teien_panorama_irradiance.octrn", a_scenes[SceneType_EMILY].a_textures + num_objects, false);
+		++num_objects;
+
+		a_scenes[SceneType_EMILY].num_objects = num_objects;
+		a_scenes[SceneType_EMILY].p_vs = &vertex_lighting_vs;
+		a_scenes[SceneType_EMILY].p_ps = &passthrough_ps;
 	}
 
 	{ // Init Camera
@@ -1351,9 +1375,9 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 
 void update(f32 delta_t) {
 	rmt_BeginCPUSample(update, 0);
-
+	delta_t = 16.666;
 	f32 delta_pitch_rad, delta_yaw_rad;
-	f32 mouse_pos_scale = 0.00025f *  delta_t;
+	f32 mouse_pos_scale = 0.0005f * delta_t;
 
 	if(input.is_right_mouse_button_pressed) {
 		delta_pitch_rad = (input.mouse_pos.y - input.last_mouse_pos.y) * mouse_pos_scale;

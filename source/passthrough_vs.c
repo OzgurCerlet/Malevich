@@ -1,4 +1,4 @@
-#include "common_shader.h"
+#include "common_shader_core.h"
 	
 typedef struct Vs_Input {
 	v4f256 POSITION;

@@ -39,6 +39,19 @@ inline float4 get_texel_f(Texture2D tex, i32 s, i32 t) {
 	return *(((float4*)tex.p_data) + MAX(MIN(t, tex.height - 1), 0) * tex.width + MAX(MIN(s, tex.width - 1), 0));
 }
 
+inline v4f256 get_texel_f_x8(Texture2D tex, i256 s, i256 t) {
+	s = _mm256_max_epi32(_mm256_min_epi32(s, _mm256_set1_epi32(tex.width - 1)), _mm256_set1_epi32(0));
+	t = _mm256_max_epi32(_mm256_min_epi32(t, _mm256_set1_epi32(tex.height - 1)), _mm256_set1_epi32(0));
+	s = _mm256_add_epi32(_mm256_mullo_epi32(t, _mm256_set1_epi32(tex.width)), s);
+	s = _mm256_mullo_epi32(s, _mm256_set1_epi32(4));
+	v4f256 result;
+	result.x = _mm256_i32gather_ps(tex.p_data, s, 4);
+	result.y = _mm256_i32gather_ps(tex.p_data, _mm256_add_epi32(s, _mm256_set1_epi32(1)), 4);
+	result.z = _mm256_i32gather_ps(tex.p_data, _mm256_add_epi32(s, _mm256_set1_epi32(2)), 4);
+	result.w = _mm256_i32gather_ps(tex.p_data, _mm256_add_epi32(s, _mm256_set1_epi32(3)), 4);
+	return result;
+}
+
 inline v4f32 point_u(Texture2D tex, f32 u, f32 v) {
 	i32 s = (i32)(tex.width * u);
 	i32 t = (i32)(tex.height * (1.0 - v));
@@ -57,6 +70,13 @@ inline v4f32 point_f(Texture2D tex, f32 u, f32 v) {
 	i32 s = (i32)(tex.width * u);
 	i32 t = (i32)(tex.height * (1.0 - v));
 	v4f32 texel = get_texel_f(tex, s, t);
+	return texel;
+}
+
+inline v4f256 point_f_x8(Texture2D tex, f256 u, f256 v) {
+	i256 s = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_set1_ps((f32)tex.width), u));
+	i256 t = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_set1_ps((f32)tex.height), _mm256_sub_ps(_mm256_set1_ps(1.0), v)));
+	v4f256 texel = get_texel_f_x8(tex, s, t);
 	return texel;
 }
 
@@ -120,6 +140,26 @@ inline v4f32 bilinear_f(Texture2D tex, f32 u, f32 v) {
 	return result;
 }
 
+inline v4f256 bilinear_f_x8(Texture2D tex, f256 u, f256 v) {
+	f256 s_f32 = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps((f32)tex.width), u), _mm256_set1_ps(-0.5));
+	f256 t_f32 = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps((f32)tex.height), _mm256_sub_ps(_mm256_set1_ps(1.0), v)), _mm256_set1_ps(-0.5));
+	i256 s = _mm256_cvtps_epi32(_mm256_floor_ps(s_f32));
+	i256 t = _mm256_cvtps_epi32(_mm256_floor_ps(t_f32));
+	f256 frac_s = _mm256_sub_ps(s_f32, _mm256_cvtepi32_ps(s));
+	f256 frac_t = _mm256_sub_ps(t_f32, _mm256_cvtepi32_ps(t));
+
+	v4f256 texel_00 = get_texel_f_x8(tex, s, t);
+	v4f256 texel_10 = get_texel_f_x8(tex, _mm256_add_epi32(s, _mm256_set1_epi32(1)), t);
+	v4f256 texel_0010 = v4f256_lerp(texel_00, texel_10, frac_s);
+
+	v4f256 texel_01 = get_texel_f_x8(tex, s, _mm256_add_epi32(t, _mm256_set1_epi32(1)));
+	v4f256 texel_11 = get_texel_f_x8(tex, _mm256_add_epi32(s, _mm256_set1_epi32(1)), _mm256_add_epi32(t, _mm256_set1_epi32(1)));
+	v4f256 texel_0111 = v4f256_lerp(texel_01, texel_11, frac_s);
+
+	v4f256 result = v4f256_lerp(texel_0010, texel_0111, frac_t);
+	return result;
+}
+
 inline float4 sample_2D(Texture2D tex, float2 tex_coord) {
 	float4 texel = get_texel_f(tex, tex_coord.x, tex_coord.y);
 	return texel;
@@ -152,9 +192,15 @@ inline v4f256 sample_2D_x8_masked(Texture2D tex, v2f256 tex_coord, i256 mask) {
 
 }
 
-inline v4f256 sample_2D_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
+inline v4f256 sample_2D_u_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
 	//v4f256 result = point_u_x8(tex, tex_coord.x, tex_coord.y);
 	v4f256 result = bilinear_u_x8(tex, tex_coord.x, tex_coord.y);
+	return result;
+}
+
+inline v4f256 sample_2D_f_x8(Texture2D tex, v2f256 tex_coord) {
+	v4f256 result = point_f_x8(tex, tex_coord.x, tex_coord.y);
+	//v4f256 result = bilinear_f_x8(tex, tex_coord.x, tex_coord.y);
 	return result;
 }
 
@@ -187,9 +233,12 @@ inline v4f256 sample_2D_latlon_x8(Texture2D tex, v3f256 dir) {
 	f256 uv_x = _mm256_blendv_ps(_mm256_sub_ps(_mm256_set1_ps(1.0), acos_x_over_tau), acos_x_over_tau, _mm256_cmp_ps(cos_y, _mm256_set1_ps(0.0), _CMP_GE_OQ));
 	f256 uv_y = _mm256_mul_ps(_mm256_acos_ps(cos_theta), _mm256_set1_ps(1.0 / PI));
 	
-	f256 cond = _mm256_or_ps(_mm256_cmp_ps(cos_theta, _mm256_set1_ps(0.99), _CMP_GT_OQ), _mm256_cmp_ps(cos_theta, _mm256_set1_ps(-0.99), _CMP_LT_OQ));
-	uv_x = _mm256_blendv_ps(uv_x, _mm256_set1_ps(0), cond);
-	uv_y = _mm256_blendv_ps(uv_y, _mm256_set1_ps(0), cond);
+	f256 pos_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(0.99), _CMP_GT_OQ);
+	f256 neg_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(-0.99), _CMP_LT_OQ);
+	uv_x = _mm256_blendv_ps(uv_x, _mm256_set1_ps(0.5), _mm256_or_ps(pos_cond, neg_cond));
+	uv_y = _mm256_blendv_ps(uv_y, _mm256_set1_ps(0.0), pos_cond);
+	uv_y = _mm256_blendv_ps(uv_y, _mm256_set1_ps(1.0), neg_cond);
+	uv_y = _mm256_sub_ps(_mm256_set1_ps(1.0), uv_y);
 
-	return sample_2D_x8(tex, (v2f256) { uv_x, uv_y }, _mm256_set1_epi32(0xFFFFFFFF));
+	return sample_2D_f_x8(tex, (v2f256) { uv_x, uv_y });
 }

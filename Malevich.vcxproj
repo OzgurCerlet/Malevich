@@ -40,9 +40,10 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="source\vertex_lighting_vs.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="source\common_shader.h" />
+    <ClInclude Include="source\common_shader_core.h" />
     <ClInclude Include="source\external\octarine\octarine_image.h" />
     <ClInclude Include="source\external\octarine\octarine_mesh.h" />
     <ClInclude Include="source\math.h" />
