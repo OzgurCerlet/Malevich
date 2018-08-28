@@ -20,7 +20,7 @@ Only external dependency is [Remotery](https://github.com/Celtoys/Remotery) whic
 
 # Executable
 
-If you want to try Malevich without building, I added the runtime with an x64 executable into the /bin folder.
+If you want to try Malevich without building, I added the runtime with an x64 executable into the [bin](https://github.com/OzgurCerlet/Malevich/tree/master/bin) folder.
 
 # Third Party Licences
 * Libraries:
