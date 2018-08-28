@@ -1,4 +1,4 @@
-<!--![alt text](screenshot.png "Screenshot")-->
+![alt text](screenshot.png "Screenshot")
 
 # Malevich
 
