@@ -16,7 +16,7 @@ The project is set to build with the following configurations:
 
 The repository contains Visual Studio 2017 project files that are ready to build with Intel Compiler 18.0 on Windows 10. At the time of writing, Intel System Studio 2018 has a free commerical license in which you can download Intel Compiler 18.0 as a module. You also need to install Desktop development with C++ component of Visual Studio if you have not done before.
 
-Only external dependency is [Remotery](https://github.com/Celtoys/Remotery) which is included in the project. You can use index.htlm under /vis to see the profiler in action.
+Only external dependency is [Remotery](https://github.com/Celtoys/Remotery) which is included in the project. You can use index.htlm under [vis](https://github.com/OzgurCerlet/Malevich/tree/master/source/external/Remotery/vis) folder to see the profiler in action.
 
 # Executable
 
