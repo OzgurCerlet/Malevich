@@ -44,6 +44,12 @@
     <ClCompile Include="source\vertex_lighting_vs.c">
       <Filter>Source Files\shaders</Filter>
     </ClCompile>
+    <ClCompile Include="source\env_lighting_ps.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="source\fullscreen_vs.c">
+      <Filter>Source Files\shaders</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\math.h">

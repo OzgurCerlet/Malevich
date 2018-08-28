@@ -199,8 +199,8 @@ inline v4f256 sample_2D_u_x8(Texture2D tex, v2f256 tex_coord, i256 mask) {
 }
 
 inline v4f256 sample_2D_f_x8(Texture2D tex, v2f256 tex_coord) {
-	v4f256 result = point_f_x8(tex, tex_coord.x, tex_coord.y);
-	//v4f256 result = bilinear_f_x8(tex, tex_coord.x, tex_coord.y);
+	//v4f256 result = point_f_x8(tex, tex_coord.x, tex_coord.y);
+	v4f256 result = bilinear_f_x8(tex, tex_coord.x, tex_coord.y);
 	return result;
 }
 
@@ -233,8 +233,8 @@ inline v4f256 sample_2D_latlon_x8(Texture2D tex, v3f256 dir) {
 	f256 uv_x = _mm256_blendv_ps(_mm256_sub_ps(_mm256_set1_ps(1.0), acos_x_over_tau), acos_x_over_tau, _mm256_cmp_ps(cos_y, _mm256_set1_ps(0.0), _CMP_GE_OQ));
 	f256 uv_y = _mm256_mul_ps(_mm256_acos_ps(cos_theta), _mm256_set1_ps(1.0 / PI));
 	
-	f256 pos_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(0.99), _CMP_GT_OQ);
-	f256 neg_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(-0.99), _CMP_LT_OQ);
+	f256 pos_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(0.999), _CMP_GT_OQ);
+	f256 neg_cond = _mm256_cmp_ps(cos_theta, _mm256_set1_ps(-0.999), _CMP_LT_OQ);
 	uv_x = _mm256_blendv_ps(uv_x, _mm256_set1_ps(0.5), _mm256_or_ps(pos_cond, neg_cond));
 	uv_y = _mm256_blendv_ps(uv_y, _mm256_set1_ps(0.0), pos_cond);
 	uv_y = _mm256_blendv_ps(uv_y, _mm256_set1_ps(1.0), neg_cond);

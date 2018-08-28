@@ -21,6 +21,9 @@ typedef int DXGI_FORMAT;
 #define WIDTH	1200 //560;
 #define HEIGHT  720 //704;
 
+#define WINDOW_WIDTH 1200
+#define WINDOW_HEIGHT 720
+
 #define TILE_WIDTH	8 
 #define TILE_HEIGHT 8 
 #define VECTOR_WIDTH 8
@@ -48,6 +51,8 @@ extern PixelShader passthrough_ps;
 extern VertexShader basic_vs;
 extern PixelShader basic_ps;
 extern VertexShader vertex_lighting_vs;
+extern PixelShader env_lighting_ps;
+extern VertexShader fullscreen_vs;
 
 typedef struct MeshHeader {
 	uint32_t size;
@@ -166,6 +171,8 @@ typedef struct Tile {
 
 typedef struct PerFrameCB {
 	m4x4f32 clip_from_world;
+	m4x4f32 view_from_clip;
+	m4x4f32 world_from_view;
 }PerFrameCB;
 
 typedef struct Camera {
@@ -210,8 +217,8 @@ typedef struct SuprematistVertex {
 typedef struct Scene {
 	Mesh a_meshes[MAX_OBJECT_COUNT_PER_SCENE];
 	Texture2D a_textures[MAX_OBJECT_COUNT_PER_SCENE];
-	VertexShader *p_vs;
-	PixelShader *p_ps;
+	VertexShader a_vertex_shaders[MAX_OBJECT_COUNT_PER_SCENE];
+	PixelShader a_pixel_shaders[MAX_OBJECT_COUNT_PER_SCENE];
 	u32 num_objects;
 }Scene;
 
@@ -246,11 +253,28 @@ u32 suprematist_index_buffer[] = {
 	0, 0, 0,
 	0, 0, 0,
 };
+SuprematistVertex fullscreen_vertex_buffer[] = {
+	{ { 0.00000, 0.00000, 0.0, 1.0 }, { 0.0, 0.0, 0.0 }, {0.0} },
+	{ { 1.00000, 0.00000, 0.0, 1.0 }, { 0.0, 0.0, 0.0 }, {0.0} },
+	{ { 1.00000, 1.00000, 0.0, 1.0 }, { 0.0, 0.0, 0.0 }, {0.0} },
+	{ { 0.00000, 1.00000, 0.0, 1.0 }, { 0.0, 0.0, 0.0 }, {0.0} },
+};
+u32 fullscreen_index_buffer[] = {
+	0, 1, 2,
+	2, 3, 0,
+	0, 0, 0,
+	0, 0, 0,
+	0, 0, 0,
+	0, 0, 0,
+	0, 0, 0,
+	0, 0, 0,
+};
 enum SceneType {
 	SceneType_FTM = 0,
 	SceneType_TOON,
 	SceneType_SUPREMATISM,
 	SceneType_EMILY,
+	SceneType_LOCOMOTIVE,
 	SceneType_COUNT
 };
 Scene a_scenes[SceneType_COUNT];
@@ -258,9 +282,10 @@ u32 current_scene_index = 0;
 
 //----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
+
 void paint_window(HDC h_device_context) {
 	HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
-	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, frame_width, frame_height);
+	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, WINDOW_WIDTH, WINDOW_HEIGHT);
 	HBITMAP old_backbuffer = (HBITMAP)SelectObject(backbuffer_dc, backbuffer);
 
 	typedef struct tagV5BMPINFO {
@@ -286,7 +311,7 @@ void paint_window(HDC h_device_context) {
 	info.bmiHeader = bmpheader;
 
 	// Draw to bitmap
-	StretchDIBits(backbuffer_dc, 0, 0, frame_width, frame_height, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+	StretchDIBits(backbuffer_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
 	if(input.is_space_pressed) {
 		SetBkMode(backbuffer_dc, TRANSPARENT);
 		char gui_buf[64];
@@ -314,7 +339,7 @@ void paint_window(HDC h_device_context) {
 	}
 
 	// Blit bitmap
-	BitBlt(h_device_context, 0, 0, frame_width, frame_height, backbuffer_dc, 0, 0, SRCCOPY);
+	BitBlt(h_device_context, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, backbuffer_dc, 0, 0, SRCCOPY);
 
 	// all done, now we need to cleanup
 	SelectObject(backbuffer_dc, old_backbuffer); // select back original bitmap
@@ -373,6 +398,39 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 	}
 
 	return 0;
+}
+
+void init_window(HINSTANCE h_instance, i32 n_cmd_show) {
+	const char *p_window_class_name = "Malevich Window Class";
+	const char *p_window_name = "Malevich";
+	{
+		WNDCLASSEX window_class = { 0 };
+		window_class.cbSize = sizeof(WNDCLASSEX);
+		window_class.style = CS_HREDRAW | CS_VREDRAW;
+		window_class.lpfnWndProc = window_proc;
+		window_class.hInstance = h_instance;
+		window_class.hIcon = (HICON)(LoadImage(NULL, "../config/suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+		window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+		window_class.hbrBackground = CreateSolidBrush(RGB(227, 223, 216));// (HBRUSH)(COLOR_WINDOW + 1);
+		window_class.lpszClassName = p_window_class_name;
+
+		ATOM result = RegisterClassExA(&window_class);
+		if(!result) { error_win32("RegisterClassExA", GetLastError()); return; };
+
+		RECT window_rect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
+		AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
+
+		h_window = CreateWindowExA(
+			0, p_window_class_name, p_window_name,
+			WS_OVERLAPPEDWINDOW | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+			window_rect.right - window_rect.left,
+			window_rect.bottom - window_rect.top,
+			NULL, NULL, h_instance, NULL);
+		if(!h_window) { error_win32("CreateWindowExA", GetLastError()); return; };
+
+		ShowWindow(h_window, n_cmd_show);
+		UpdateWindow(h_window);
+	}
 }
 
 //----------------------------------------  UTILITY  ----------------------------------------------------------------------------------------------------------------------------------------------------//
@@ -1110,7 +1168,11 @@ void clear_depth_stencil_view(const f32 depth) {
 	while(depth_buffer_texel_count--) {
 		*p_depth++ = depth;
 	}
-	memset(a_tile_min_depths, 1.0, sizeof(f32)*NUM_BINS);
+
+	for(i32 i = 0; i < NUM_BINS; ++i) {
+		a_tile_min_depths[i] = 0.0;
+	}
+
 	rmt_EndCPUSample();
 }
 
@@ -1181,10 +1243,10 @@ void render(f32 delta_t_ms) {
 	Scene *p_scene = a_scenes + current_scene_index;
 	for(i32 object_index = 0; object_index < p_scene->num_objects; ++object_index) {
 		// Set the draw call specific part of the pipeline
-		graphics_pipeline.ia.input_layout = p_scene->p_vs->in_vertex_size / VECTOR_WIDTH;
-		graphics_pipeline.vs.output_register_count = p_scene->p_vs->out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
-		graphics_pipeline.vs.shader = p_scene->p_vs->vs_main;
-		graphics_pipeline.ps.shader = p_scene->p_ps->ps_main;
+		graphics_pipeline.ia.input_layout = p_scene->a_vertex_shaders[object_index].in_vertex_size / VECTOR_WIDTH;
+		graphics_pipeline.vs.output_register_count = p_scene->a_vertex_shaders[object_index].out_vertex_size / (sizeof(v4f32)*VECTOR_WIDTH);
+		graphics_pipeline.vs.shader = p_scene->a_vertex_shaders[object_index].vs_main;
+		graphics_pipeline.ps.shader = p_scene->a_pixel_shaders[object_index].ps_main;
 
 		graphics_pipeline.ia.p_index_buffer = p_scene->a_meshes[object_index].p_index_buffer;
 		graphics_pipeline.ia.p_vertex_buffer = p_scene->a_meshes[object_index].p_vertex_buffer;
@@ -1209,87 +1271,70 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 		error("init", "Malevich requires AVX support to run!");
 	}
 
-	{ // Init Window
-		const char *p_window_class_name = "Malevich Window Class";
-		const char *p_window_name = "Malevich";
-		{
-			WNDCLASSEX window_class = { 0 };
-			window_class.cbSize = sizeof(WNDCLASSEX);
-			window_class.style = CS_HREDRAW | CS_VREDRAW;
-			window_class.lpfnWndProc = window_proc;
-			window_class.hInstance = h_instance;
-			window_class.hIcon = (HICON)(LoadImage(NULL, "../config/suprematism.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-			window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
-			window_class.hbrBackground = CreateSolidBrush(RGB(227, 223, 216));// (HBRUSH)(COLOR_WINDOW + 1);
-			window_class.lpszClassName = p_window_class_name;
-
-			ATOM result = RegisterClassExA(&window_class);
-			if(!result) { error_win32("RegisterClassExA", GetLastError()); return; };
-
-			RECT window_rect = { 0, 0, frame_width, frame_height };
-			AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
-
-			h_window = CreateWindowExA(
-				0, p_window_class_name, p_window_name,
-				WS_OVERLAPPEDWINDOW | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
-				window_rect.right - window_rect.left,
-				window_rect.bottom - window_rect.top,
-				NULL, NULL, h_instance, NULL);
-			if(!h_window) { error_win32("CreateWindowExA", GetLastError()); return; };
-
-			ShowWindow(h_window, n_cmd_show);
-			UpdateWindow(h_window);
-		}
-	}
+	init_window(h_instance, n_cmd_show);
 
 	{ // Scene ftm
 		u32 num_objects = 0;
 		load_mesh("../assets/ftm_piedras_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_piedras_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_madera_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_madera_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_leaves_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_leaves_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_dec_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_dec_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_roof_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_roof_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_ground_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_ground_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/ftm_sky_mesh.octrn", a_scenes[SceneType_FTM].a_meshes + num_objects);
 		load_texture("../assets/ftm_sky_tex.octrn", a_scenes[SceneType_FTM].a_textures + num_objects, true);
+		a_scenes[SceneType_FTM].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_FTM].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		a_scenes[SceneType_FTM].num_objects = num_objects;
-		a_scenes[SceneType_FTM].p_vs = &basic_vs;
-		a_scenes[SceneType_FTM].p_ps = &basic_ps;
 	}
 
 	{ // Scene toon
 		u32 num_objects = 0;
 		load_mesh("../assets/toon_house_mesh.octrn", a_scenes[SceneType_TOON].a_meshes + num_objects);
 		load_texture("../assets/toon_house_tex.octrn", a_scenes[SceneType_TOON].a_textures + num_objects, true);
+		a_scenes[SceneType_TOON].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_TOON].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		load_mesh("../assets/toon_sky_mesh.octrn", a_scenes[SceneType_TOON].a_meshes + num_objects);
 		load_texture("../assets/toon_sky_tex.octrn", a_scenes[SceneType_TOON].a_textures + num_objects, true);
+		a_scenes[SceneType_TOON].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_TOON].a_pixel_shaders[num_objects] = basic_ps;
 		++num_objects;
 
 		a_scenes[SceneType_TOON].num_objects = num_objects;
-		a_scenes[SceneType_TOON].p_vs = &basic_vs;
-		a_scenes[SceneType_TOON].p_ps = &basic_ps;
 	}
 
 	{ // Scene suprematism
@@ -1298,19 +1343,39 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 		a_scenes[SceneType_SUPREMATISM].a_meshes[0].p_index_buffer = &suprematist_index_buffer;
 		a_scenes[SceneType_SUPREMATISM].a_meshes[0].header.index_count = 24;
 		a_scenes[SceneType_SUPREMATISM].num_objects = 1;
-		a_scenes[SceneType_SUPREMATISM].p_vs = &passthrough_vs;
-		a_scenes[SceneType_SUPREMATISM].p_ps = &passthrough_ps;
+		a_scenes[SceneType_SUPREMATISM].a_vertex_shaders[0] = passthrough_vs;
+		a_scenes[SceneType_SUPREMATISM].a_pixel_shaders[0] = passthrough_ps;
 	}
 
 	{ // Scene Emily
 		u32 num_objects = 0;
 		load_mesh("../assets/emily_head_mesh.octrn", a_scenes[SceneType_EMILY].a_meshes + num_objects);
+		//load_mesh("../assets/sphere_x8.octrn", a_scenes[SceneType_EMILY].a_meshes + num_objects);
 		load_texture("../assets/ninomaru_teien_panorama_irradiance.octrn", a_scenes[SceneType_EMILY].a_textures + num_objects, false);
+		a_scenes[SceneType_EMILY].a_vertex_shaders[num_objects] = basic_vs;
+		a_scenes[SceneType_EMILY].a_pixel_shaders[num_objects] = env_lighting_ps;
+		++num_objects;
+
+		a_scenes[SceneType_EMILY].a_meshes[num_objects].p_vertex_buffer = &fullscreen_vertex_buffer;
+		a_scenes[SceneType_EMILY].a_meshes[num_objects].p_index_buffer = &fullscreen_index_buffer;
+		a_scenes[SceneType_EMILY].a_meshes[num_objects].header.index_count = 24;
+		load_texture("../assets/ninomaru_teien_panorama_radiance.octrn", a_scenes[SceneType_EMILY].a_textures + num_objects, false);
+		a_scenes[SceneType_EMILY].a_vertex_shaders[num_objects] = fullscreen_vs;
+		a_scenes[SceneType_EMILY].a_pixel_shaders[num_objects] = env_lighting_ps;
 		++num_objects;
 
 		a_scenes[SceneType_EMILY].num_objects = num_objects;
-		a_scenes[SceneType_EMILY].p_vs = &vertex_lighting_vs;
-		a_scenes[SceneType_EMILY].p_ps = &passthrough_ps;
+	}
+
+	{ // Scene Locomotive
+		u32 num_objects = 0;
+		load_mesh("../assets/locomotive_mesh.octrn", a_scenes[SceneType_LOCOMOTIVE].a_meshes + num_objects);
+		load_texture("../assets/ninomaru_teien_panorama_irradiance.octrn", a_scenes[SceneType_LOCOMOTIVE].a_textures + num_objects, false);
+		a_scenes[SceneType_LOCOMOTIVE].a_vertex_shaders[num_objects] = vertex_lighting_vs;
+		a_scenes[SceneType_LOCOMOTIVE].a_pixel_shaders[num_objects] = passthrough_ps;
+		++num_objects;
+
+		a_scenes[SceneType_LOCOMOTIVE].num_objects = num_objects;
 	}
 
 	{ // Init Camera
@@ -1368,8 +1433,6 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 		world_from_view.m13 = camera.pos.y;
 		world_from_view.m23 = camera.pos.z;
 		camera.view_from_world = m4x4f32_inverse(&world_from_view);
-	
-		per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
 	}
 }
 
@@ -1447,8 +1510,13 @@ void update(f32 delta_t) {
 	world_from_view.m23 = camera.pos.z;
 	camera.view_from_world = m4x4f32_inverse(&world_from_view);
 
-	per_frame_cb.clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
-	
+	m4x4f32 clip_from_world = m4x4f32_mul_m4x4f32(&camera.clip_from_view, &camera.view_from_world);
+	m4x4f32 world_from_clip = m4x4f32_inverse(&clip_from_world);
+
+	per_frame_cb.clip_from_world = clip_from_world;
+	per_frame_cb.view_from_clip = m4x4f32_inverse(&camera.clip_from_view);
+	per_frame_cb.world_from_view = world_from_view;
+
 	rmt_EndCPUSample();
 }
 

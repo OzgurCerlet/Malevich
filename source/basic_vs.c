@@ -15,14 +15,14 @@ typedef struct Vs_Output {
 
 typedef struct ConstantBuffer {
 	float4x4 clip_from_world;
+	float4x4 view_from_clip;
+	float4x4 world_from_view;
 } ConstantBuffer;
-
-const uint cb_id = 0;
 
 static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data, const void **pp_constant_buffers, const void **pp_shader_resource_views) {
 	Vs_Input *p_in = ((Vs_Input*)p_vertex_input_data);
 	Vs_Output *p_out = ((Vs_Output*)p_vertex_output_data);
-	ConstantBuffer *p_cb = (ConstantBuffer*)(pp_constant_buffers[cb_id]);
+	ConstantBuffer *p_cb = (ConstantBuffer*)(pp_constant_buffers[0]);
 
 	v4f256 pos_ws = { p_in->POSITION.x, p_in->POSITION.y, p_in->POSITION.z, _mm256_set1_ps(1.f) };
 	v4f256 pos_cs = m4x4f32_mul_v4f256(&p_cb->clip_from_world, pos_ws);

@@ -19,7 +19,9 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="source\env_lighting_ps.c" />
     <ClCompile Include="source\external\Remotery\Remotery.c" />
+    <ClCompile Include="source\fullscreen_vs.c" />
     <ClCompile Include="source\main.c" />
     <ClCompile Include="source\basic_ps.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</ExcludedFromBuild>

@@ -15,6 +15,8 @@ typedef struct Vs_Output {
 
 typedef struct ConstantBuffer {
 	float4x4 clip_from_world;
+	float4x4 view_from_clip;
+	float4x4 world_from_view;
 } ConstantBuffer;
 
 static void vs_main(const void *p_vertex_input_data, void *p_vertex_output_data, const void **pp_constant_buffers, const void **pp_shader_resource_views) {
