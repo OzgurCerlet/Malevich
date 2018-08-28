@@ -807,8 +807,6 @@ void primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output
 			signed_area = ((x[1] - x[0]) * (y[2] - y[0])) - ((x[2] - x[0]) * (y[1] - y[0]));
 			//if(signed_area == 0) { signed_area=0.00001; } // degenerate triangle 
 			
-			//if(abs(signed_area) < (1 << (NUM_SUB_PIXEL_PRECISION_BITS * 2))) { continue; }; // degenerate triangle ?
-
 			// BUG(cerlet): Backface culling creates cracks in the rasterization!
 			// face culling with winding order
 			if(signed_area > 0) { continue; }; // ASSUMPTION(cerlet): Default back-face culling
@@ -819,9 +817,7 @@ void primitive_assembly_stage(u32 in_triangle_count, const void* p_vertex_output
 			set_edge_function(&setup.a_edge_functions[1], signed_area, x[2], y[2], x[0], y[0]);
 
 			f32 signed_area_f32 = (f32)(signed_area >> (NUM_SUB_PIXEL_PRECISION_BITS * 2));
-			//assert(signed_area_f32 != 0);
 			if(signed_area_f32 == 0.0) signed_area_f32 = 1.0;
-
 
 			setup.one_over_area = fabs(1.f / signed_area_f32);
 			setup.a_reciprocal_ws[0] = a_reciprocal_ws[0];
@@ -971,6 +967,7 @@ void rasterizer(u32 total_triangle_count_in_bins, u32 num_compacted_bins, const 
 
 			i256 y = _mm256_set1_epi32(min_bounds.y);
 			for(i32 i = 0; i < 8; ++i) {
+				// TODO(cerlet): Test coverage in the pixel center(x+0.5,y+0.5)
 				i256 alpha = _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[0].a), x), NUM_SUB_PIXEL_PRECISION_BITS);
 				alpha = _mm256_add_epi32(alpha, _mm256_slli_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(tri.setup.a_edge_functions[0].b), y), NUM_SUB_PIXEL_PRECISION_BITS));
 				alpha = _mm256_add_epi32(alpha, _mm256_set1_epi32(tri.setup.a_edge_functions[0].c));
