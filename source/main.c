@@ -279,6 +279,7 @@ enum SceneType {
 };
 Scene a_scenes[SceneType_COUNT];
 u32 current_scene_index = 0;
+char cpu_brand_name[0x40] = {0};
 
 //----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
@@ -315,6 +316,9 @@ void paint_window(HDC h_device_context) {
 		SetBkMode(backbuffer_dc, TRANSPARENT);
 		char gui_buf[64];
 		int y = 0;
+		sprintf(gui_buf, "cpu: %s", cpu_brand_name);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
 		sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
 		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
 		y += 14;
@@ -477,6 +481,32 @@ bool is_avx_supported() {
 		is_avx_supported = (xcr_feature_mask & 0x6) == 0x6;
 	}
 	return is_avx_supported;
+}
+
+// https://weseetips.wordpress.com/tag/cpu-brand-string/
+void get_cpu_brand() {
+
+	// Get extended ids.
+	int cpu_info[4] = { -1 };
+	__cpuid(cpu_info, 0x80000000);
+	unsigned int nExIds = cpu_info[0];
+
+	// Get the information associated with each extended ID.
+	for(unsigned int i = 0x80000000; i <= nExIds; ++i){
+		__cpuid(cpu_info, i);
+
+		// Interpret CPU brand string and cache information.
+		if(i == 0x80000002){
+			memcpy(cpu_brand_name, cpu_info, sizeof(cpu_info));
+		}
+		else if(i == 0x80000003)
+		{
+			memcpy(cpu_brand_name + 16, cpu_info, sizeof(cpu_info));
+		}
+		else if(i == 0x80000004){
+			memcpy(cpu_brand_name + 32, cpu_info, sizeof(cpu_info));
+		}
+	}
 }
 
 void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
@@ -1266,6 +1296,8 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 	if(!is_avx_supported()) {
 		error("init", "Malevich requires AVX support to run!");
 	}
+
+	get_cpu_brand();
 
 	init_window(h_instance, n_cmd_show);
 
