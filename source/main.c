@@ -280,6 +280,7 @@ enum SceneType {
 Scene a_scenes[SceneType_COUNT];
 u32 current_scene_index = 0;
 char cpu_brand_name[0x40] = {0};
+u32 num_logical_processors = 0;
 
 //----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
@@ -317,6 +318,9 @@ void paint_window(HDC h_device_context) {
 		char gui_buf[64];
 		int y = 0;
 		sprintf(gui_buf, "cpu: %s", cpu_brand_name);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
+		sprintf(gui_buf, "logical processor count: %d", num_logical_processors);
 		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
 		y += 14;
 		sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
@@ -484,7 +488,7 @@ bool is_avx_supported() {
 }
 
 // https://weseetips.wordpress.com/tag/cpu-brand-string/
-void get_cpu_brand() {
+void get_cpu_info() {
 
 	// Get extended ids.
 	int cpu_info[4] = { -1 };
@@ -507,6 +511,10 @@ void get_cpu_brand() {
 			memcpy(cpu_brand_name + 32, cpu_info, sizeof(cpu_info));
 		}
 	}
+
+	SYSTEM_INFO system_info;
+	GetSystemInfo(&system_info);
+	num_logical_processors = system_info.dwNumberOfProcessors;
 }
 
 void load_mesh(const char *p_mesh_name, Mesh *p_mesh) {
@@ -1296,8 +1304,7 @@ void init(HINSTANCE h_instance, i32 n_cmd_show) {
 	if(!is_avx_supported()) {
 		error("init", "Malevich requires AVX support to run!");
 	}
-
-	get_cpu_brand();
+	get_cpu_info();
 
 	init_window(h_instance, n_cmd_show);
 
