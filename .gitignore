@@ -261,3 +261,10 @@ __pycache__/
 *.pyc
 /My Amplifier Results - Malevich
 *.db3
+
+# Malevich
+!bin/octarine_image.lib
+!bin/octarine_mesh.lib
+!bin/malevich.exe
+!bin/libiomp5md.dll
+!bin/libmmd.dll
