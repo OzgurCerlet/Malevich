@@ -282,7 +282,6 @@ u32 current_scene_index = 0;
 
 //----------------------------------------  WINDOW  ----------------------------------------------------------------------------------------------------------------------------------------------------//
 
-
 void paint_window(HDC h_device_context) {
 	HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
 	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, WINDOW_WIDTH, WINDOW_HEIGHT);
