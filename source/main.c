@@ -21,9 +21,6 @@ typedef int DXGI_FORMAT;
 #define WIDTH	1200 //560;
 #define HEIGHT  720 //704;
 
-#define WINDOW_WIDTH 1200
-#define WINDOW_HEIGHT 720
-
 #define TILE_WIDTH	8 
 #define TILE_HEIGHT 8 
 #define VECTOR_WIDTH 8
@@ -224,6 +221,8 @@ typedef struct Scene {
 
 Pipeline graphics_pipeline;
 HWND h_window;
+u32 window_width = WIDTH;
+u32 window_height = HEIGHT;
 PerFrameCB per_frame_cb;
 Camera camera;
 Input input;
@@ -286,7 +285,7 @@ u32 num_logical_processors = 0;
 
 void paint_window(HDC h_device_context) {
 	HDC backbuffer_dc = CreateCompatibleDC(h_device_context);
-	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, WINDOW_WIDTH, WINDOW_HEIGHT);
+	HBITMAP backbuffer = CreateCompatibleBitmap(h_device_context, window_width, window_height);
 	HBITMAP old_backbuffer = (HBITMAP)SelectObject(backbuffer_dc, backbuffer);
 
 	typedef struct tagV5BMPINFO {
@@ -312,7 +311,7 @@ void paint_window(HDC h_device_context) {
 	info.bmiHeader = bmpheader;
 
 	// Draw to bitmap
-	StretchDIBits(backbuffer_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
+	StretchDIBits(backbuffer_dc, 0, 0, window_width, window_height, 0, 0, frame_width, frame_height, frame_buffer, &info, DIB_RGB_COLORS, SRCCOPY);
 	if(input.is_space_pressed) {
 		SetBkMode(backbuffer_dc, TRANSPARENT);
 		char gui_buf[64];
@@ -346,7 +345,7 @@ void paint_window(HDC h_device_context) {
 	}
 
 	// Blit bitmap
-	BitBlt(h_device_context, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, backbuffer_dc, 0, 0, SRCCOPY);
+	BitBlt(h_device_context, 0, 0, window_width, window_height, backbuffer_dc, 0, 0, SRCCOPY);
 
 	// all done, now we need to cleanup
 	SelectObject(backbuffer_dc, old_backbuffer); // select back original bitmap
@@ -387,6 +386,10 @@ LRESULT CALLBACK window_proc(HWND h_window, UINT msg, WPARAM w_param, LPARAM l_p
 				case 'W': input.is_w_pressed = false; break;
 			}
 		} break;
+		case WM_SIZE: {
+			window_width = LOWORD(l_param);
+			window_height = HIWORD(l_param);
+		} break;
 		case WM_MOUSEMOVE: {
 			input.mouse_pos.x = (signed short)(l_param);
 			input.mouse_pos.y = (signed short)(l_param >> 16);
@@ -424,12 +427,12 @@ void init_window(HINSTANCE h_instance, i32 n_cmd_show) {
 		ATOM result = RegisterClassExA(&window_class);
 		if(!result) { error_win32("RegisterClassExA", GetLastError()); return; };
 
-		RECT window_rect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
+		RECT window_rect = { 0, 0, window_width, window_height };
 		AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
 
 		h_window = CreateWindowExA(
 			0, p_window_class_name, p_window_name,
-			WS_OVERLAPPEDWINDOW | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+			WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
 			window_rect.right - window_rect.left,
 			window_rect.bottom - window_rect.top,
 			NULL, NULL, h_instance, NULL);
