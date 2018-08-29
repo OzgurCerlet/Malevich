@@ -322,6 +322,9 @@ void paint_window(HDC h_device_context) {
 		sprintf(gui_buf, "logical processor count: %d", num_logical_processors);
 		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
 		y += 14;
+		sprintf(gui_buf, "frame buffer size: %d, %d", frame_width, frame_height);
+		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
+		y += 14;
 		sprintf(gui_buf, "frame time: %.5f ms", stats.frame_time);
 		TextOutA(backbuffer_dc, 0, y, gui_buf, strlen(gui_buf));
 		y += 14;
