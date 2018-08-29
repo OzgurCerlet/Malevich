@@ -22,6 +22,11 @@ Only external dependency is [Remotery](https://github.com/Celtoys/Remotery) whic
 
 If you want to try Malevich without building, I added the runtime with an x64 executable into the [bin](https://github.com/OzgurCerlet/Malevich/tree/master/bin) folder.
 
+# Using the Demo
+- To navigate in a scene use the Q, W, E, A, S, D keys while pressing the RMB.
+- To switch displaying the statistics press SPACE.
+- To change the scene use the + and - keys.
+
 # Third Party Licences
 * Libraries:
   * Remotery: Apache License 2.0
